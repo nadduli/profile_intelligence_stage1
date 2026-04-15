@@ -42,7 +42,13 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = exc.errors()
     first = errors[0] if errors else {}
+    error_type = first.get("type", "")
     msg = first.get("msg", "Invalid request data")
+    if error_type == "missing":
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": "Name is required"},
+        )
     return JSONResponse(
         status_code=422,
         content={"status": "error", "message": msg},

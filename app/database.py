@@ -3,7 +3,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 from sqlalchemy import DateTime, func
 from .config import get_settings
 from datetime import datetime
-from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 import uuid
 import uuid_extensions
 
@@ -11,7 +10,8 @@ settings = get_settings()
 
 
 def _build_engine_url(url: str):
-    """Strip libpq-only params from the URL and return (clean_url, connect_args)."""
+    """Strip libpq-only params asyncpg doesn't support; map sslmode to connect_args."""
+    from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=True)
     ssl_required = params.pop("sslmode", [""])[0] in ("require", "verify-ca", "verify-full")
@@ -42,10 +42,10 @@ class Base(AsyncAttrs, DeclarativeBase):
 
 async def get_db():
     """Get a database session."""
-    try:
-        async with SessionLocal() as db:
+    async with SessionLocal() as db:
+        try:
             yield db
             await db.commit()
-    except Exception:
-        await db.rollback()
-        raise
+        except Exception:
+            await db.rollback()
+            raise
