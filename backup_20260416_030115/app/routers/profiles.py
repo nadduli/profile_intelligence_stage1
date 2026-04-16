@@ -1,15 +1,11 @@
-import logging
 from fastapi import APIRouter, Depends, status, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError
 from ..database import get_db
 from ..schemas import ProfileCreate, ProfileResponse, ProfileListItem
 from ..services.enrichment import enrich_name
 from ..services.profile import get_profile_by_name, create_profile, get_profile_by_id, get_profiles, delete_profile
 import uuid
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 
@@ -21,16 +17,13 @@ async def create_profile_endpoint(
 ):
     """Create a new profile with enriched data."""
     if not body.name or not body.name.strip():
-        logger.warning("Profile creation attempted with empty name")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Name is required"
         )
 
-    # Check if profile already exists (case-insensitive)
     existing_profile = await get_profile_by_name(db, body.name)
     if existing_profile:
-        logger.info(f"Profile already exists for name: {body.name}")
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={
@@ -40,31 +33,12 @@ async def create_profile_endpoint(
             },
         )
 
-    try:
-        logger.info(f"Enriching profile for name: {body.name}")
-        enriched_data = await enrich_name(body.name)
-        logger.debug(f"Enrichment completed for {body.name}")
-        
-        new_profile = await create_profile(db, body.name, enriched_data)
-        logger.info(f"Profile created successfully with ID: {new_profile.id}")
-        
-        return {
-            "status": "success",
-            "data": ProfileResponse.model_validate(new_profile)
-        }
-    except IntegrityError:
-        # Handle race condition where another request created the same profile
-        logger.warning(f"Integrity error for name {body.name}, rolling back and retrieving existing profile")
-        await db.rollback()
-        existing_profile = await get_profile_by_name(db, body.name)
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "status": "success",
-                "message": "Profile already exists",
-                "data": ProfileResponse.model_validate(existing_profile).model_dump(mode="json"),
-            },
-        )
+    enriched_data = await enrich_name(body.name)
+    new_profile = await create_profile(db, body.name, enriched_data)
+    return {
+        "status": "success",
+        "data": ProfileResponse.model_validate(new_profile)
+    }
 
 
 @router.get("/{id}")
@@ -73,10 +47,8 @@ async def get_profile_endpoint(
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve a profile by its ID."""
-    logger.info(f"Fetching profile with ID: {id}")
     profile = await get_profile_by_id(db, id)
     if not profile:
-        logger.warning(f"Profile not found with ID: {id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Profile not found"
@@ -95,7 +67,6 @@ async def list_profiles_endpoint(
     age_group: str | None = None
 ):
     """List all profiles with optional filters."""
-    logger.info(f"Listing profiles with filters - gender: {gender}, country_id: {country_id}, age_group: {age_group}")
     profiles = await get_profiles(db, gender=gender, country_id=country_id, age_group=age_group)
     return {
         "status": "success",
@@ -110,13 +81,10 @@ async def delete_profile_endpoint(
     db: AsyncSession = Depends(get_db)
 ):
     """Delete a profile by its ID."""
-    logger.info(f"Deleting profile with ID: {id}")
     profile = await get_profile_by_id(db, id)
     if not profile:
-        logger.warning(f"Profile not found for deletion with ID: {id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Profile not found"
         )
     await delete_profile(db, id)
-    logger.info(f"Profile deleted successfully with ID: {id}")

@@ -1,4 +1,3 @@
-import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,30 +7,19 @@ from .routers import profiles
 from .database import engine, Base
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up application")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
-    logger.info("Shutting down application")
     await engine.dispose()
 
 
 app = FastAPI(title="Profile Intelligence Service", lifespan=lifespan)
 
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -39,7 +27,6 @@ app.add_middleware(
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    logger.warning(f"HTTP Exception: {exc.status_code} - {exc.detail}")
     if exc.status_code == 502:
         return JSONResponse(
             status_code=502,
@@ -53,10 +40,15 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    logger.warning(f"Validation Error: {exc.errors()}")
     errors = exc.errors()
     first = errors[0] if errors else {}
+    error_type = first.get("type", "")
     msg = first.get("msg", "Invalid request data")
+    if error_type == "missing":
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": "Name is required"},
+        )
     return JSONResponse(
         status_code=422,
         content={"status": "error", "message": msg},
@@ -65,7 +57,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
         content={"status": "error", "message": "Internal server error"},
@@ -81,11 +72,5 @@ def root():
 
 
 @app.get("/health")
-async def health():
-    try:
-        async with engine.begin() as conn:
-            await conn.execute("SELECT 1")
-        return {"status": "ok", "database": "connected"}
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return {"status": "degraded", "database": "disconnected"}
+def health():
+    return {"status": "ok"}
