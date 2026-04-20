@@ -1,5 +1,6 @@
 from .database import Base
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import String
 
 
 class Profile(Base):
@@ -8,10 +9,10 @@ class Profile(Base):
     name: Mapped[str] = mapped_column(unique=True, index=True)
     gender: Mapped[str]
     gender_probability: Mapped[float]
-    sample_size: Mapped[int]
     age: Mapped[int]
-    age_group: Mapped[str]
-    country_id: Mapped[str]
+    age_group: Mapped[str] = mapped_column(String, index=True)
+    country_id: Mapped[str] = mapped_column(String(20), index=True)
+    country_name: Mapped[str] = mapped_column(String)
     country_probability: Mapped[float]
 
     def __repr__(self) -> str:
