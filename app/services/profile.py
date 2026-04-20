@@ -1,6 +1,6 @@
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete, and_
+from sqlalchemy import select, func, delete, and_, true
 from ..models import Profile
 import uuid
 
@@ -56,7 +56,7 @@ async def get_profiles(
     if min_country_probability is not None:
         conditions.append(Profile.country_probability >= min_country_probability)
     
-    count_stmt = select(func.count(Profile.id)).where(and_(*conditions))
+    count_stmt = select(func.count(Profile.id)).where(and_(true(), *conditions))
 
     total = (await db.execute(count_stmt)).scalar()
 
@@ -70,7 +70,7 @@ async def get_profiles(
 
     stmt = (
         select(Profile)
-        .where(and_(*conditions))
+        .where(and_(true(), *conditions))
         .order_by(order_fn)
         .offset((page - 1) * limit)
         .limit(limit)
