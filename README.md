@@ -259,3 +259,7 @@ The `/search` endpoint uses a **pure rule-based parser** — no AI or LLMs invol
 5. If no keywords are recognized, the parser returns `null` and the endpoint responds with `"Unable to interpret query"`
 
 Multi-word country names (e.g. `south africa`, `dr congo`) are matched before single-word ones to avoid partial matches.
+
+## Author
+- **[Nadduli Daniel]** — [naddulidaniel94@gmail.com] - [GitHub](https://github.com/naddulidaniel) | [LinkedIn](https://linkedin.com/in/nadduli-daniel)
+
