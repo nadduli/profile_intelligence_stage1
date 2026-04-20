@@ -4,14 +4,59 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from ..database import get_db
-from ..schemas import ProfileCreate, ProfileResponse, ProfileListItem
+from ..schemas import ProfileCreate, ProfileResponse
 from ..services.enrichment import enrich_name
-from ..services.profile import get_profile_by_name, create_profile, get_profile_by_id, get_profiles, delete_profile
+from ..services.profile import get_profile_by_name, create_profile, get_profile_by_id, get_profiles, delete_profile, get_stats
 import uuid
+from ..services.query_parser import parse_query
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
+
+
+@router.get("/search")
+async def search_profiles_endpoint(
+    q: str,
+    db: AsyncSession = Depends(get_db),
+    page: int = 1,
+    limit: int = 10,
+):
+    """Natural language search endpoint. Converts plain English into filters."""
+    if not q or not q.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing or empty parameter"
+        )
+
+    if page < 1 or limit < 1 or limit > 50:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid query parameters"
+        )
+
+    filters = parse_query(q)
+
+    if filters is None:
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": "Unable to interpret query"}
+        )
+
+    profiles, total = await get_profiles(
+        db,
+        page=page,
+        limit=limit,
+        **filters,
+    )
+
+    return {
+        "status": "success",
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "data": [ProfileResponse.model_validate(p) for p in profiles],
+    }
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -27,7 +72,6 @@ async def create_profile_endpoint(
             detail="Name is required"
         )
 
-    # Check if profile already exists (case-insensitive)
     existing_profile = await get_profile_by_name(db, body.name)
     if existing_profile:
         logger.info(f"Profile already exists for name: {body.name}")
@@ -53,7 +97,6 @@ async def create_profile_endpoint(
             "data": ProfileResponse.model_validate(new_profile)
         }
     except IntegrityError:
-        # Handle race condition where another request created the same profile
         logger.warning(f"Integrity error for name {body.name}, rolling back and retrieving existing profile")
         await db.rollback()
         existing_profile = await get_profile_by_name(db, body.name)
@@ -65,6 +108,13 @@ async def create_profile_endpoint(
                 "data": ProfileResponse.model_validate(existing_profile).model_dump(mode="json"),
             },
         )
+
+
+@router.get("/stats")
+async def get_stats_endpoint(db: AsyncSession = Depends(get_db)):
+    """Return aggregate statistics across all profiles."""
+    stats = await get_stats(db)
+    return {"status": "success", "data": stats}
 
 
 @router.get("/{id}")
@@ -91,16 +141,58 @@ async def get_profile_endpoint(
 async def list_profiles_endpoint(
     db: AsyncSession = Depends(get_db),
     gender: str | None = None,
+    age_group: str | None = None,
     country_id: str | None = None,
-    age_group: str | None = None
+    min_age: int | None = None,
+    max_age: int | None = None,
+    min_gender_probability: float | None = None,
+    min_country_probability: float | None = None,
+    sort_by: str = "created_at",
+    order: str = "asc",
+    page: int = 1,
+    limit: int = 10,
 ):
-    """List all profiles with optional filters."""
-    logger.info(f"Listing profiles with filters - gender: {gender}, country_id: {country_id}, age_group: {age_group}")
-    profiles = await get_profiles(db, gender=gender, country_id=country_id, age_group=age_group)
+    """List profiles with filtering, sorting, and pagination."""
+    valid_sort_fields = {"age", "created_at", "gender_probability"}
+    if sort_by not in valid_sort_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid query parameters"
+        )
+
+    if order not in {"asc", "desc"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid query parameters"
+        )
+
+    if page < 1 or limit < 1 or limit > 50:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid query parameters"
+        )
+
+    profiles, total = await get_profiles(
+        db,
+        gender=gender,
+        age_group=age_group,
+        country_id=country_id,
+        min_age=min_age,
+        max_age=max_age,
+        min_gender_probability=min_gender_probability,
+        min_country_probability=min_country_probability,
+        sort_by=sort_by,
+        order=order,
+        page=page,
+        limit=limit,
+    )
+
     return {
         "status": "success",
-        "count": len(profiles),
-        "data": [ProfileListItem.model_validate(p) for p in profiles]
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "data": [ProfileResponse.model_validate(p) for p in profiles],
     }
 
 

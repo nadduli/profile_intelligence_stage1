@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from .routers import profiles
 from .database import engine, Base
+from sqlalchemy import text
 
 
 logging.basicConfig(
@@ -84,7 +85,7 @@ def root():
 async def health():
     try:
         async with engine.begin() as conn:
-            await conn.execute("SELECT 1")
+            await conn.execute(text("SELECT 1"))
         return {"status": "ok", "database": "connected"}
     except Exception as e:
         logger.error(f"Health check failed: {e}")
