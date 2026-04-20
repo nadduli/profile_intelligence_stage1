@@ -36,6 +36,7 @@ async def test_delete_profile_not_found(client):
 # GET /api/profiles — pagination envelope
 # ---------------------------------------------------------------------------
 
+
 async def test_list_profiles_returns_paginated_envelope(client_with_data):
     """Response must include status, page, limit, total, data."""
     response = await client_with_data.get("/api/profiles")
@@ -75,6 +76,7 @@ async def test_list_profiles_pagination_page2(client_with_data):
 # ---------------------------------------------------------------------------
 # GET /api/profiles — filtering
 # ---------------------------------------------------------------------------
+
 
 async def test_filter_by_gender_female(client_with_data):
     """Filter by gender=female should return only females."""
@@ -145,6 +147,7 @@ async def test_combined_gender_age_filters(client_with_data):
 # GET /api/profiles — sorting
 # ---------------------------------------------------------------------------
 
+
 async def test_sort_by_age_asc(client_with_data):
     """sort_by=age&order=asc should return youngest first."""
     response = await client_with_data.get("/api/profiles?sort_by=age&order=asc&limit=5")
@@ -154,14 +157,18 @@ async def test_sort_by_age_asc(client_with_data):
 
 async def test_sort_by_age_desc(client_with_data):
     """sort_by=age&order=desc should return oldest first."""
-    response = await client_with_data.get("/api/profiles?sort_by=age&order=desc&limit=5")
+    response = await client_with_data.get(
+        "/api/profiles?sort_by=age&order=desc&limit=5"
+    )
     ages = [p["age"] for p in response.json()["data"]]
     assert ages == sorted(ages, reverse=True)
 
 
 async def test_sort_by_gender_probability(client_with_data):
     """sort_by=gender_probability should be a valid sort field."""
-    response = await client_with_data.get("/api/profiles?sort_by=gender_probability&order=desc&limit=5")
+    response = await client_with_data.get(
+        "/api/profiles?sort_by=gender_probability&order=desc&limit=5"
+    )
     assert response.status_code == 200
     probs = [p["gender_probability"] for p in response.json()["data"]]
     assert probs == sorted(probs, reverse=True)
@@ -170,6 +177,7 @@ async def test_sort_by_gender_probability(client_with_data):
 # ---------------------------------------------------------------------------
 # GET /api/profiles — validation
 # ---------------------------------------------------------------------------
+
 
 async def test_invalid_sort_by(client_with_data):
     """Invalid sort_by value should return 400."""
@@ -203,6 +211,7 @@ async def test_invalid_page(client_with_data):
 # ---------------------------------------------------------------------------
 # GET /api/profiles/search — natural language query
 # ---------------------------------------------------------------------------
+
 
 async def test_search_by_gender_female(client_with_data):
     """Query 'females' should return only female profiles."""
@@ -253,7 +262,9 @@ async def test_search_females_above_30(client_with_data):
 
 async def test_search_combined(client_with_data):
     """'adult males from nigeria' should combine all three filters."""
-    response = await client_with_data.get("/api/profiles/search?q=adult+males+from+nigeria")
+    response = await client_with_data.get(
+        "/api/profiles/search?q=adult+males+from+nigeria"
+    )
     data = response.json()
     assert data["status"] == "success"
     assert data["total"] == 1
@@ -297,6 +308,7 @@ async def test_search_pagination(client_with_data):
 # ---------------------------------------------------------------------------
 # GET /api/profiles/stats
 # ---------------------------------------------------------------------------
+
 
 async def test_stats_structure(client_with_data):
     """Stats response must include total, by_gender, by_age_group, top_countries."""

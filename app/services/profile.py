@@ -1,8 +1,10 @@
+import uuid
+
+from sqlalchemy import and_, delete, func, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete, and_, true
+
 from ..models import Profile
-import uuid
 
 
 async def get_profile_by_name(db: AsyncSession, name: str) -> Profile | None:
@@ -32,7 +34,6 @@ async def get_profiles(
     order: str = "asc",
     page: int = 1,
     limit: int = 10,
-
 ) -> tuple[list[Profile], int]:
     """
     Query profiles with optional filters, sorting, and pagination.
@@ -55,7 +56,7 @@ async def get_profiles(
         conditions.append(Profile.gender_probability >= min_gender_probability)
     if min_country_probability is not None:
         conditions.append(Profile.country_probability >= min_country_probability)
-    
+
     count_stmt = select(func.count(Profile.id)).where(and_(true(), *conditions))
 
     total = (await db.execute(count_stmt)).scalar()
@@ -63,7 +64,7 @@ async def get_profiles(
     sort_column = {
         "age": Profile.age,
         "gender_probability": Profile.gender_probability,
-        "created_at": Profile.created_at
+        "created_at": Profile.created_at,
     }.get(sort_by, Profile.created_at)
 
     order_fn = sort_column.desc() if order.lower() == "desc" else sort_column.asc()
@@ -96,6 +97,7 @@ async def create_profile(db: AsyncSession, name: str, data: dict) -> Profile:
         await db.rollback()
         return await get_profile_by_name(db, name)
 
+
 async def delete_profile(db: AsyncSession, id: uuid.UUID) -> None:
     """Delete a profile by uuid."""
     stmt = delete(Profile).where(Profile.id == id)
@@ -106,22 +108,32 @@ async def get_stats(db: AsyncSession) -> dict:
     """Return aggregate counts across all profiles."""
     total = (await db.execute(select(func.count(Profile.id)))).scalar()
 
-    gender_rows = (await db.execute(
-        select(Profile.gender, func.count(Profile.id))
-        .group_by(Profile.gender)
-    )).all()
+    gender_rows = (
+        await db.execute(
+            select(Profile.gender, func.count(Profile.id)).group_by(Profile.gender)
+        )
+    ).all()
 
-    age_group_rows = (await db.execute(
-        select(Profile.age_group, func.count(Profile.id))
-        .group_by(Profile.age_group)
-    )).all()
+    age_group_rows = (
+        await db.execute(
+            select(Profile.age_group, func.count(Profile.id)).group_by(
+                Profile.age_group
+            )
+        )
+    ).all()
 
-    top_countries_rows = (await db.execute(
-        select(Profile.country_id, Profile.country_name, func.count(Profile.id).label("count"))
-        .group_by(Profile.country_id, Profile.country_name)
-        .order_by(func.count(Profile.id).desc())
-        .limit(10)
-    )).all()
+    top_countries_rows = (
+        await db.execute(
+            select(
+                Profile.country_id,
+                Profile.country_name,
+                func.count(Profile.id).label("count"),
+            )
+            .group_by(Profile.country_id, Profile.country_name)
+            .order_by(func.count(Profile.id).desc())
+            .limit(10)
+        )
+    ).all()
 
     return {
         "total": total,

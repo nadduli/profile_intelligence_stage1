@@ -1,9 +1,11 @@
 import asyncio
 import json
-from app.database import SessionLocal, engine, Base
-from app.models import Profile
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 import uuid_extensions
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from app.database import Base, SessionLocal, engine
+from app.models import Profile
 
 
 async def seed():
@@ -33,7 +35,11 @@ async def seed():
     ]
 
     async with SessionLocal() as db:
-        stmt = pg_insert(Profile).values(rows).on_conflict_do_nothing(index_elements=["name"])
+        stmt = (
+            pg_insert(Profile)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=["name"])
+        )
         result = await db.execute(stmt)
         await db.commit()
 

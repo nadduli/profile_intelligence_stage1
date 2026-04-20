@@ -1,14 +1,11 @@
-from pydantic import BaseModel, ConfigDict, Field
-from datetime import datetime
 import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProfileCreate(BaseModel):
-    name: str = Field(
-        min_length=1,
-        max_length=100,
-        description="The name to enrich"
-    )
+    name: str = Field(min_length=1, max_length=100, description="The name to enrich")
 
 
 class ProfileResponse(BaseModel):
