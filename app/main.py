@@ -8,7 +8,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from .database import Base, engine
+from .database import engine
 from .routers import profiles
 
 logging.basicConfig(
@@ -20,8 +20,6 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up application")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     yield
     logger.info("Shutting down application")
     await engine.dispose()
