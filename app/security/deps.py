@@ -80,3 +80,22 @@ async def get_current_user(
         )
 
     return user
+
+def require_role(*roles: str):
+    """Dependency factory: ensure the current user has one of the given roles.
+
+    Usage:
+        @router.post("/")
+        async def create_thing(user: User = Depends(require_role("admin"))):
+            ...
+    """
+
+    async def dependency(user: User = Depends(get_current_user)) -> User:
+        if user.role not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires role: {' or '.join(roles)}",
+            )
+        return user
+
+    return dependency
