@@ -46,3 +46,6 @@ class UserResponse(BaseModel):
     is_active: bool
     last_login_at: datetime | None
     created_at: datetime
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str

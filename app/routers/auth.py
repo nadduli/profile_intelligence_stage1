@@ -3,18 +3,23 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Cookie, Depends, Request, status
-from fastapi.responses import RedirectResponse, Response
+from fastapi import APIRouter, Body, Cookie, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid_extensions import uuid7
 
 from ..config import Settings, get_settings
 from ..database import get_db
 from ..models import User
-from ..schemas import UserResponse
+from ..schemas import RefreshTokenRequest, UserResponse
 from ..security.deps import get_current_user
 from ..services.github_oauth import GitHubOAuthError, exchange_code, fetch_user
-from ..services.refresh_tokens import store_refresh_token
+from ..services.refresh_tokens import (
+    RefreshTokenError,
+    UserDisabledError,
+    rotate_refresh_token,
+    store_refresh_token,
+)
 from ..services.tokens import encode_access_token, encode_refresh_token
 from ..services.users import upsert_from_github
 
@@ -193,3 +198,53 @@ async def github_callback(
 async def me(user: User = Depends(get_current_user)):
     """Return the currently authenticated user's profile."""
     return user
+
+@router.post("/refresh")
+async def refresh(
+    body: RefreshTokenRequest | None = Body(default=None),
+    refresh_token: str | None = Cookie(default=None),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Rotate a refresh token. Accepts cookie (web) or JSON body (CLI)."""
+    raw_token = refresh_token or (body.refresh_token if body else None)
+    if not raw_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No refresh token provided",
+        )
+
+    try:
+        _user, new_access, new_refresh = await rotate_refresh_token(
+            db, raw_token, settings
+        )
+    except UserDisabledError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account disabled",
+        )
+    except RefreshTokenError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+
+    response = JSONResponse(
+        {
+            "status": "success",
+            "access_token": new_access,
+            "refresh_token": new_refresh,
+        }
+    )
+
+    if refresh_token is not None:
+        csrf_token = secrets.token_urlsafe(32)
+        _set_session_cookies(
+            response,
+            access_token=new_access,
+            refresh_token=new_refresh,
+            csrf_token=csrf_token,
+            settings=settings,
+        )
+
+    return response
