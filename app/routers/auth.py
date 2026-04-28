@@ -10,6 +10,9 @@ from uuid_extensions import uuid7
 
 from ..config import Settings, get_settings
 from ..database import get_db
+from ..models import User
+from ..schemas import UserResponse
+from ..security.deps import get_current_user
 from ..services.github_oauth import GitHubOAuthError, exchange_code, fetch_user
 from ..services.refresh_tokens import store_refresh_token
 from ..services.tokens import encode_access_token, encode_refresh_token
@@ -185,3 +188,8 @@ async def github_callback(
     )
     response.delete_cookie("oauth_state", path="/auth/github/callback")
     return response
+
+@router.get("/me", response_model=UserResponse)
+async def me(user: User = Depends(get_current_user)):
+    """Return the currently authenticated user's profile."""
+    return user

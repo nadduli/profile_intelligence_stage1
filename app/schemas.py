@@ -33,3 +33,16 @@ class ProfileListItem(BaseModel):
     age_group: str
     country_id: str
     country_name: str
+
+class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    github_id: str
+    username: str
+    email: str | None
+    avatar_url: str | None
+    role: str
+    is_active: bool
+    last_login_at: datetime | None
+    created_at: datetime
