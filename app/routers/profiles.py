@@ -7,7 +7,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
+from ..models import User
 from ..schemas import ProfileCreate, ProfileResponse
+from ..security.deps import get_current_user, require_role
 from ..services.enrichment import enrich_name
 from ..services.profile import (
     create_profile,
@@ -21,7 +23,11 @@ from ..services.query_parser import parse_query
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/profiles", tags=["profiles"])
+router = APIRouter(
+    prefix="/api/profiles",
+    tags=["profiles"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.get("/search")
@@ -68,7 +74,9 @@ async def search_profiles_endpoint(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_profile_endpoint(
-    body: ProfileCreate, db: AsyncSession = Depends(get_db)
+    body: ProfileCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_role("admin")),
 ):
     """Create a new profile with enriched data."""
     if not body.name or not body.name.strip():
@@ -97,7 +105,9 @@ async def create_profile_endpoint(
         logger.debug(f"Enrichment completed for {body.name}")
 
         new_profile = await create_profile(db, body.name, enriched_data)
-        logger.info(f"Profile created successfully with ID: {new_profile.id}")
+        logger.info(
+            f"Admin {user.username} created profile {new_profile.id} ({body.name})"
+        )
 
         return {
             "status": "success",
@@ -199,9 +209,12 @@ async def list_profiles_endpoint(
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_profile_endpoint(id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_profile_endpoint(
+    id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_role("admin")),
+):
     """Delete a profile by its ID."""
-    logger.info(f"Deleting profile with ID: {id}")
     profile = await get_profile_by_id(db, id)
     if not profile:
         logger.warning(f"Profile not found for deletion with ID: {id}")
@@ -209,4 +222,4 @@ async def delete_profile_endpoint(id: uuid.UUID, db: AsyncSession = Depends(get_
             status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
         )
     await delete_profile(db, id)
-    logger.info(f"Profile deleted successfully with ID: {id}")
+    logger.info(f"Admin {user.username} deleted profile {id}")
