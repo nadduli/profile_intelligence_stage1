@@ -1,27 +1,77 @@
+import csv
+import io
 import logging
 import math
 import uuid
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models import User
+from ..models import Profile, User
 from ..schemas import ProfileCreate, ProfileResponse
 from ..security.deps import get_current_user, require_role
 from ..services.enrichment import enrich_name
 from ..services.profile import (
     create_profile,
     delete_profile,
+    get_all_profiles_filtered,
     get_profile_by_id,
     get_profile_by_name,
     get_profiles,
     get_stats,
 )
 from ..services.query_parser import parse_query
+
+CSV_COLUMNS = [
+    "id",
+    "name",
+    "gender",
+    "gender_probability",
+    "age",
+    "age_group",
+    "country_id",
+    "country_name",
+    "country_probability",
+    "created_at",
+]
+
+
+def _profile_to_csv_row(p: Profile) -> list[str]:
+    """Map a Profile to a row in the spec's column order."""
+    return [
+        str(p.id),
+        p.name,
+        p.gender,
+        f"{p.gender_probability}",
+        str(p.age),
+        p.age_group,
+        p.country_id,
+        p.country_name,
+        f"{p.country_probability}",
+        p.created_at.isoformat(),
+    ]
+
+
+def _csv_stream(profiles: list[Profile]):
+    """Yield CSV bytes one row at a time for StreamingResponse."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+
+    writer.writerow(CSV_COLUMNS)
+    yield buf.getvalue()
+    buf.seek(0)
+    buf.truncate(0)
+
+    for p in profiles:
+        writer.writerow(_profile_to_csv_row(p))
+        yield buf.getvalue()
+        buf.seek(0)
+        buf.truncate(0)
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +226,57 @@ async def get_stats_endpoint(db: AsyncSession = Depends(get_db)):
     """Return aggregate statistics across all profiles."""
     stats = await get_stats(db)
     return {"status": "success", "data": stats}
+
+
+@router.get("/export")
+async def export_profiles_endpoint(
+    db: AsyncSession = Depends(get_db),
+    format: str = "csv",
+    gender: str | None = None,
+    age_group: str | None = None,
+    country_id: str | None = None,
+    min_age: int | None = None,
+    max_age: int | None = None,
+    min_gender_probability: float | None = None,
+    min_country_probability: float | None = None,
+    sort_by: str = "created_at",
+    order: str = "asc",
+):
+    """Export profiles matching the given filters as CSV."""
+    if format != "csv":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only csv format is supported",
+        )
+
+    valid_sort_fields = {"age", "created_at", "gender_probability"}
+    if sort_by not in valid_sort_fields or order not in {"asc", "desc"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid query parameters",
+        )
+
+    profiles = await get_all_profiles_filtered(
+        db,
+        gender=gender,
+        age_group=age_group,
+        country_id=country_id,
+        min_age=min_age,
+        max_age=max_age,
+        min_gender_probability=min_gender_probability,
+        min_country_probability=min_country_probability,
+        sort_by=sort_by,
+        order=order,
+    )
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filename = f"profiles_{timestamp}.csv"
+
+    return StreamingResponse(
+        _csv_stream(profiles),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{id}")

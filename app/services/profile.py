@@ -81,6 +81,48 @@ async def get_profiles(
     return result.scalars().all(), total
 
 
+async def get_all_profiles_filtered(
+    db: AsyncSession,
+    *,
+    gender: str | None = None,
+    country_id: str | None = None,
+    age_group: str | None = None,
+    min_age: int | None = None,
+    max_age: int | None = None,
+    min_gender_probability: float | None = None,
+    min_country_probability: float | None = None,
+    sort_by: str = "created_at",
+    order: str = "asc",
+) -> list[Profile]:
+    """Return all profiles matching filters. No pagination. Used for export."""
+    conditions = []
+    if gender:
+        conditions.append(Profile.gender == gender.lower())
+    if age_group:
+        conditions.append(Profile.age_group == age_group.lower())
+    if country_id:
+        conditions.append(Profile.country_id == country_id.upper())
+    if min_age is not None:
+        conditions.append(Profile.age >= min_age)
+    if max_age is not None:
+        conditions.append(Profile.age <= max_age)
+    if min_gender_probability is not None:
+        conditions.append(Profile.gender_probability >= min_gender_probability)
+    if min_country_probability is not None:
+        conditions.append(Profile.country_probability >= min_country_probability)
+
+    sort_column = {
+        "age": Profile.age,
+        "gender_probability": Profile.gender_probability,
+        "created_at": Profile.created_at,
+    }.get(sort_by, Profile.created_at)
+    order_fn = sort_column.desc() if order.lower() == "desc" else sort_column.asc()
+
+    stmt = select(Profile).where(and_(true(), *conditions)).order_by(order_fn)
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def create_profile(db: AsyncSession, name: str, data: dict) -> Profile:
     """
     Create a new profile with pre-enriched data.
