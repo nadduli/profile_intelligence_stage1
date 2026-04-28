@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from .database import engine
-from .routers import profiles
+from .routers import auth, profiles
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -74,6 +74,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(profiles.router)
+app.include_router(auth.router)
 
 
 @app.get("/")
