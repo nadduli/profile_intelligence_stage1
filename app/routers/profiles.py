@@ -1,7 +1,9 @@
 import logging
+import math
 import uuid
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,9 +32,46 @@ router = APIRouter(
 )
 
 
+def paginated_response(
+    request: Request,
+    *,
+    items: list,
+    page: int,
+    limit: int,
+    total: int,
+) -> dict:
+    """Build the Stage 3 paginated response envelope.
+
+    Preserves all current query params (filters, sort, etc.) when building
+    next/prev links — only `page` and `limit` are overridden.
+    """
+    total_pages = math.ceil(total / limit) if limit > 0 else 0
+    base_path = request.url.path
+    current_params = dict(request.query_params)
+
+    def url_for(p: int) -> str:
+        params = {**current_params, "page": str(p), "limit": str(limit)}
+        return f"{base_path}?{urlencode(params)}"
+
+    return {
+        "status": "success",
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "total_pages": total_pages,
+        "links": {
+            "self": url_for(page),
+            "next": url_for(page + 1) if page < total_pages else None,
+            "prev": url_for(page - 1) if page > 1 else None,
+        },
+        "data": items,
+    }
+
+
 @router.get("/search")
 async def search_profiles_endpoint(
     q: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     page: int = 1,
     limit: int = 10,
@@ -63,13 +102,13 @@ async def search_profiles_endpoint(
         **filters,
     )
 
-    return {
-        "status": "success",
-        "page": page,
-        "limit": limit,
-        "total": total,
-        "data": [ProfileResponse.model_validate(p) for p in profiles],
-    }
+    return paginated_response(
+        request,
+        items=[ProfileResponse.model_validate(p) for p in profiles],
+        page=page,
+        limit=limit,
+        total=total,
+    )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -154,6 +193,7 @@ async def get_profile_endpoint(id: uuid.UUID, db: AsyncSession = Depends(get_db)
 
 @router.get("")
 async def list_profiles_endpoint(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     gender: str | None = None,
     age_group: str | None = None,
@@ -199,13 +239,13 @@ async def list_profiles_endpoint(
         limit=limit,
     )
 
-    return {
-        "status": "success",
-        "page": page,
-        "limit": limit,
-        "total": total,
-        "data": [ProfileResponse.model_validate(p) for p in profiles],
-    }
+    return paginated_response(
+        request,
+        items=[ProfileResponse.model_validate(p) for p in profiles],
+        page=page,
+        limit=limit,
+        total=total,
+    )
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
