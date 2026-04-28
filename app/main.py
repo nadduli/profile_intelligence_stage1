@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from .database import engine
 from .middleware.api_version import APIVersionMiddleware
+from .middleware.request_logging import RequestLoggingMiddleware
 from .routers import auth, profiles
 
 logging.basicConfig(
@@ -38,6 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(APIVersionMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 
 
 @app.exception_handler(HTTPException)
