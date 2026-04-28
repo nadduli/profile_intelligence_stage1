@@ -27,12 +27,13 @@ def _now() -> datetime:
 def encode_access_token(user_id: uuid.UUID, role: str) -> str:
     """Issue a short-lived access JWT carrying the user's role."""
     now = _now()
+    expires_at = now + timedelta(seconds=settings.access_token_ttl_seconds)
     payload = {
         "sub": str(user_id),
         "role": role,
         "type": "access",
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(seconds=settings.access_token_ttl_seconds)).timestamp()),
+        "exp": int(expires_at.timestamp()),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
@@ -40,12 +41,13 @@ def encode_access_token(user_id: uuid.UUID, role: str) -> str:
 def encode_refresh_token(user_id: uuid.UUID, family_id: uuid.UUID) -> str:
     """Issue a refresh JWT bound to a rotation family."""
     now = _now()
+    expires_at = now + timedelta(seconds=settings.refresh_token_ttl_seconds)
     payload = {
         "sub": str(user_id),
         "family_id": str(family_id),
         "type": "refresh",
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(seconds=settings.refresh_token_ttl_seconds)).timestamp()),
+        "exp": int(expires_at.timestamp()),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
