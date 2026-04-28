@@ -30,7 +30,14 @@ def _build_engine_url(url: str):
 
 
 _db_url, _connect_args = _build_engine_url(settings.database_url)
-engine = create_async_engine(_db_url, echo=settings.debug, connect_args=_connect_args)
+engine = create_async_engine(
+    _db_url,
+    echo=settings.debug,
+    connect_args=_connect_args,
+    pool_pre_ping=True,
+    pool_recycle=300,
+)
+
 
 SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 
