@@ -17,6 +17,7 @@ from ..services.github_oauth import GitHubOAuthError, exchange_code, fetch_user
 from ..services.refresh_tokens import (
     RefreshTokenError,
     UserDisabledError,
+    revoke_by_token,
     rotate_refresh_token,
     store_refresh_token,
 )
@@ -247,4 +248,27 @@ async def refresh(
             settings=settings,
         )
 
+    return response
+
+@router.post("/logout")
+async def logout(
+    body: RefreshTokenRequest | None = Body(default=None),
+    refresh_token: str | None = Cookie(default=None),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Revoke the refresh token and clear session cookies.
+
+    Idempotent. Succeeds whether or not the caller has a valid session.
+    """
+    raw_token = refresh_token or (body.refresh_token if body else None)
+    if raw_token:
+        await revoke_by_token(db, raw_token)
+
+    response = JSONResponse({"status": "success"})
+    response.delete_cookie("access_token", path="/", domain=settings.cookie_domain)
+    response.delete_cookie(
+        "refresh_token", path="/auth", domain=settings.cookie_domain
+    )
+    response.delete_cookie("csrf_token", path="/", domain=settings.cookie_domain)
     return response
