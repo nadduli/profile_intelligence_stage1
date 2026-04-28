@@ -1,27 +1,24 @@
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Body, Cookie, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from uuid_extensions import uuid7
 
 from ..config import Settings, get_settings
 from ..database import get_db
 from ..models import User
-from ..schemas import RefreshTokenRequest, UserResponse
+from ..schemas import CliCodeExchange, RefreshTokenRequest, UserResponse
 from ..security.deps import get_current_user
 from ..services.github_oauth import GitHubOAuthError, exchange_code, fetch_user
 from ..services.refresh_tokens import (
     RefreshTokenError,
     UserDisabledError,
+    issue_session,
     revoke_by_token,
     rotate_refresh_token,
-    store_refresh_token,
 )
-from ..services.tokens import encode_access_token, encode_refresh_token
 from ..services.users import upsert_from_github
 
 logger = logging.getLogger(__name__)
@@ -165,20 +162,7 @@ async def github_callback(
     if not user.is_active:
         return _redirect_to_login(settings, "account_disabled")
 
-    family_id = uuid7()
-    access_token = encode_access_token(user.id, user.role)
-    refresh_token = encode_refresh_token(user.id, family_id)
-    expires_at = datetime.now(timezone.utc) + timedelta(
-        seconds=settings.refresh_token_ttl_seconds
-    )
-    await store_refresh_token(
-        db,
-        user_id=user.id,
-        token=refresh_token,
-        family_id=family_id,
-        expires_at=expires_at,
-    )
-
+    access_token, refresh_token = await issue_session(db, user, settings)
     csrf_token = secrets.token_urlsafe(32)
 
     response = RedirectResponse(
@@ -272,3 +256,60 @@ async def logout(
     )
     response.delete_cookie("csrf_token", path="/", domain=settings.cookie_domain)
     return response
+
+
+@router.post("/cli/exchange")
+async def cli_exchange(
+    body: CliCodeExchange,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Exchange a GitHub OAuth code (with PKCE verifier) for our session tokens.
+
+    Used by the CLI after capturing the OAuth callback at its loopback server.
+    Returns JSON; sets no cookies. CLI persists the tokens locally.
+    """
+    redirect_uri = f"http://127.0.0.1:{settings.github_cli_callback_port}/callback"
+
+    try:
+        gh_access_token = await exchange_code(
+            code=body.code,
+            client_id=settings.github_cli_client_id,
+            client_secret=settings.github_cli_client_secret,
+            redirect_uri=redirect_uri,
+            code_verifier=body.code_verifier,
+        )
+        gh_user = await fetch_user(gh_access_token)
+    except GitHubOAuthError as e:
+        logger.warning(f"CLI OAuth exchange failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="GitHub authentication failed",
+        )
+
+    user = await upsert_from_github(
+        db,
+        github_id=str(gh_user["id"]),
+        username=gh_user["login"],
+        email=gh_user.get("email"),
+        avatar_url=gh_user.get("avatar_url"),
+    )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account disabled",
+        )
+
+    access_token, refresh_token = await issue_session(db, user, settings)
+
+    return {
+        "status": "success",
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user": {
+            "id": str(user.id),
+            "username": user.username,
+            "role": user.role,
+        },
+    }

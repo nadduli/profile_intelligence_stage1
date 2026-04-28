@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid_extensions import uuid7
 
 from ..config import Settings
 from ..models import RefreshToken, User
@@ -137,3 +138,29 @@ async def revoke_by_token(db: AsyncSession, raw_token: str) -> None:
         .where(RefreshToken.revoked_at.is_(None))
         .values(revoked_at=datetime.now(timezone.utc))
     )
+
+
+async def issue_session(
+    db: AsyncSession,
+    user: User,
+    settings: Settings,
+) -> tuple[str, str]:
+    """Issue a fresh (access, refresh) pair for an authenticated user.
+
+    Generates a new family_id (this is a fresh login, not a rotation)
+    and persists the hashed refresh token. Returns the raw tokens.
+    """
+    family_id = uuid7()
+    access = encode_access_token(user.id, user.role)
+    refresh = encode_refresh_token(user.id, family_id)
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=settings.refresh_token_ttl_seconds
+    )
+    await store_refresh_token(
+        db,
+        user_id=user.id,
+        token=refresh,
+        family_id=family_id,
+        expires_at=expires_at,
+    )
+    return access, refresh

@@ -49,3 +49,8 @@ class UserResponse(BaseModel):
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
+
+
+class CliCodeExchange(BaseModel):
+    code: str
+    code_verifier: str
