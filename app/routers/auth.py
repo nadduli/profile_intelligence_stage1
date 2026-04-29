@@ -11,6 +11,7 @@ from ..database import get_db
 from ..models import User
 from ..schemas import CliCodeExchange, RefreshTokenRequest, UserResponse
 from ..security.deps import get_current_user
+from ..security.rate_limit import ip_key, limiter
 from ..services.github_oauth import GitHubOAuthError, exchange_code, fetch_user
 from ..services.refresh_tokens import (
     RefreshTokenError,
@@ -95,7 +96,8 @@ def _redirect_to_login(settings: Settings, error_code: str) -> RedirectResponse:
 
 
 @router.get("/github")
-async def github_login(settings: Settings = Depends(get_settings)):
+@limiter.limit("10/minute", key_func=ip_key)
+async def github_login(request: Request, settings: Settings = Depends(get_settings)):
     """Start the web OAuth flow."""
     state = secrets.token_urlsafe(32)
     redirect_uri = f"{settings.backend_public_url}/auth/github/callback"
@@ -121,6 +123,7 @@ async def github_login(settings: Settings = Depends(get_settings)):
 
 
 @router.get("/github/callback")
+@limiter.limit("10/minute", key_func=ip_key)
 async def github_callback(
     request: Request,
     code: str | None = None,
@@ -180,12 +183,16 @@ async def github_callback(
     return response
 
 @router.get("/me", response_model=UserResponse)
-async def me(user: User = Depends(get_current_user)):
+@limiter.limit("10/minute", key_func=ip_key)
+async def me(request: Request, user: User = Depends(get_current_user)):
     """Return the currently authenticated user's profile."""
     return user
 
+
 @router.post("/refresh")
+@limiter.limit("10/minute", key_func=ip_key)
 async def refresh(
+    request: Request,
     body: RefreshTokenRequest | None = Body(default=None),
     refresh_token: str | None = Cookie(default=None),
     db: AsyncSession = Depends(get_db),
@@ -235,7 +242,9 @@ async def refresh(
     return response
 
 @router.post("/logout")
+@limiter.limit("10/minute", key_func=ip_key)
 async def logout(
+    request: Request,
     body: RefreshTokenRequest | None = Body(default=None),
     refresh_token: str | None = Cookie(default=None),
     db: AsyncSession = Depends(get_db),
@@ -259,7 +268,9 @@ async def logout(
 
 
 @router.post("/cli/exchange")
+@limiter.limit("10/minute", key_func=ip_key)
 async def cli_exchange(
+    request: Request,
     body: CliCodeExchange,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),

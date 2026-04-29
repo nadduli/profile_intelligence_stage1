@@ -15,6 +15,7 @@ from ..database import get_db
 from ..models import Profile, User
 from ..schemas import ProfileCreate, ProfileResponse
 from ..security.deps import get_current_user, require_role
+from ..security.rate_limit import limiter, user_id_or_ip
 from ..services.enrichment import enrich_name
 from ..services.profile import (
     create_profile,
@@ -119,6 +120,7 @@ def paginated_response(
 
 
 @router.get("/search")
+@limiter.limit("60/minute", key_func=user_id_or_ip)
 async def search_profiles_endpoint(
     q: str,
     request: Request,
@@ -162,7 +164,9 @@ async def search_profiles_endpoint(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
+@limiter.limit("60/minute", key_func=user_id_or_ip)
 async def create_profile_endpoint(
+    request: Request,
     body: ProfileCreate,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_role("admin")),
@@ -222,14 +226,20 @@ async def create_profile_endpoint(
 
 
 @router.get("/stats")
-async def get_stats_endpoint(db: AsyncSession = Depends(get_db)):
+@limiter.limit("60/minute", key_func=user_id_or_ip)
+async def get_stats_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Return aggregate statistics across all profiles."""
     stats = await get_stats(db)
     return {"status": "success", "data": stats}
 
 
 @router.get("/export")
+@limiter.limit("60/minute", key_func=user_id_or_ip)
 async def export_profiles_endpoint(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     format: str = "csv",
     gender: str | None = None,
@@ -280,7 +290,12 @@ async def export_profiles_endpoint(
 
 
 @router.get("/{id}")
-async def get_profile_endpoint(id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+@limiter.limit("60/minute", key_func=user_id_or_ip)
+async def get_profile_endpoint(
+    id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Retrieve a profile by its ID."""
     logger.info(f"Fetching profile with ID: {id}")
     profile = await get_profile_by_id(db, id)
@@ -293,6 +308,7 @@ async def get_profile_endpoint(id: uuid.UUID, db: AsyncSession = Depends(get_db)
 
 
 @router.get("")
+@limiter.limit("60/minute", key_func=user_id_or_ip)
 async def list_profiles_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -350,8 +366,10 @@ async def list_profiles_endpoint(
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("60/minute", key_func=user_id_or_ip)
 async def delete_profile_endpoint(
     id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_role("admin")),
 ):

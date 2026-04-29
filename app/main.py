@@ -6,12 +6,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
 from .database import engine
 from .middleware.api_version import APIVersionMiddleware
 from .middleware.request_logging import RequestLoggingMiddleware
 from .routers import auth, profiles
+from .security.rate_limit import limiter
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -28,6 +31,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Profile Intelligence Service", lifespan=lifespan)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    response = JSONResponse(
+        status_code=429,
+        content={"status": "error", "message": "Rate limit exceeded"},
+    )
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is not None:
+        response.headers["Retry-After"] = str(retry_after)
+    return response
 
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -38,6 +54,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(APIVersionMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
