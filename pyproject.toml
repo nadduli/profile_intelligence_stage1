@@ -47,3 +47,6 @@ select = ["E", "F", "I"]  # E=pycodestyle, F=pyflakes, I=isort
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/*" = ["E501"]
