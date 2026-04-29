@@ -22,7 +22,7 @@ class APIVersionMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         version = request.headers.get("X-API-Version")
-        if version is None:
+        if not version:
             return JSONResponse(
                 status_code=400,
                 content={
