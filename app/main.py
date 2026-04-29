@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from .database import engine
 from .middleware.api_version import APIVersionMiddleware
+from .middleware.csrf import CSRFMiddleware
 from .middleware.request_logging import RequestLoggingMiddleware
 from .routers import auth, profiles
 from .security.rate_limit import limiter
@@ -55,6 +56,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(CSRFMiddleware)
 app.add_middleware(APIVersionMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
