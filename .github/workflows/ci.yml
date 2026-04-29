@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    env:
+      # Tests use SQLite in-memory; the URL just has to be syntactically valid
+      # so Settings can load. Test conftest overrides get_db with the test engine.
+      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/test
+      JWT_SECRET: ci-test-secret-must-be-long-enough-not-for-prod-use
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_TTL_SECONDS: "180"
+      REFRESH_TOKEN_TTL_SECONDS: "300"
+      GITHUB_WEB_CLIENT_ID: ci-test
+      GITHUB_WEB_CLIENT_SECRET: ci-test
+      GITHUB_CLI_CLIENT_ID: ci-test
+      GITHUB_CLI_CLIENT_SECRET: ci-test
+      GITHUB_CLI_CALLBACK_PORT: "51420"
+      BACKEND_PUBLIC_URL: http://localhost:8000
+      WEB_APP_ORIGIN: http://localhost:5173
+      COOKIE_SECURE: "false"
+      COOKIE_SAMESITE: lax
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Run tests
+        run: uv run pytest -q
