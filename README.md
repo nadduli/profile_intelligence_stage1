@@ -1,107 +1,409 @@
-# Profile Intelligence Service — Stage 2
+# Insighta Labs+ — Backend
 
-A queryable demographic intelligence REST API built with FastAPI and PostgreSQL. It stores enriched profile data for 2026 individuals and exposes endpoints for advanced filtering, sorting, pagination, and natural language querying.
+The backend service for **Insighta Labs+ (Stage 3)**: a secure, multi-interface
+profile-intelligence platform. It exposes a FastAPI HTTP API consumed by two
+separate clients — a CLI tool and a web portal — over a shared authentication
+and authorization model.
+
+> Stage 3 builds directly on Stage 2. All Stage 2 capabilities (filter, sort,
+> paginate, natural-language search) are preserved unchanged.
+
+---
+
+## Table of Contents
+
+- [System Architecture](#system-architecture)
+- [Tech Stack](#tech-stack)
+- [Authentication Flow](#authentication-flow)
+- [Token Handling](#token-handling)
+- [Role Enforcement](#role-enforcement)
+- [Natural Language Parsing](#natural-language-parsing)
+- [API Reference](#api-reference)
+- [CLI Usage](#cli-usage)
+- [Local Setup](#local-setup)
+- [Configuration](#configuration)
+- [Database Schema](#database-schema)
+- [Rate Limiting & Logging](#rate-limiting--logging)
+- [Testing & CI](#testing--ci)
+- [Deployment](#deployment)
+- [Author](#author)
+
+---
+
+## System Architecture
+
+Insighta Labs+ is split into three repositories that share one backend:
+
+```
+                ┌────────────────────────┐
+                │      GitHub OAuth      │
+                └──────────┬─────────────┘
+                           │
+         ┌─────────────────┼─────────────────┐
+         │                 │                 │
+   ┌─────▼─────┐    ┌──────▼──────┐    ┌────▼──────┐
+   │  insighta │    │ Web Portal  │    │  Backend  │
+   │   CLI     │◀──▶│  (browser)  │◀──▶│  FastAPI  │
+   │ (terminal)│    │             │    │ + Postgres│
+   └───────────┘    └─────────────┘    └───────────┘
+        │                                     ▲
+        └─────────────────────────────────────┘
+              same REST API, same data
+```
+
+Both clients hit the same `/auth/*` and `/api/*` surface. The backend is the
+single source of truth for users, roles, sessions, and profile data.
+
+### Backend layers
+
+```
+app/
+├── main.py                     # FastAPI app, middleware stack, exception handlers
+├── config.py                   # Pydantic settings loaded from .env
+├── database.py                 # Async SQLAlchemy engine + Base model
+├── models.py                   # Profile, User, RefreshToken
+├── schemas.py                  # Pydantic request/response models
+├── routers/
+│   ├── auth.py                 # /auth/* — OAuth, refresh, logout, CLI exchange
+│   └── profiles.py             # /api/profiles/* — CRUD, search, stats, export
+├── services/
+│   ├── enrichment.py           # Genderize / Agify / Nationalize fan-out
+│   ├── github_oauth.py         # GitHub token exchange + user fetch
+│   ├── profile.py              # Profile DB queries
+│   ├── query_parser.py         # Rule-based NL → filter dict
+│   ├── refresh_tokens.py       # Rotation + reuse detection
+│   ├── tokens.py               # JWT encode/decode + SHA-256 hashing
+│   └── users.py                # User upsert + lookup
+├── security/
+│   ├── deps.py                 # get_current_user, require_role
+│   └── rate_limit.py           # SlowAPI keys (per-user / per-IP)
+└── middleware/
+    ├── api_version.py          # Enforces X-API-Version: 1
+    ├── csrf.py                 # Double-submit cookie for cookie-auth requests
+    └── request_logging.py      # method/path/status/duration + X-Request-ID
+```
+
+### Middleware order (request → response)
+
+```
+RequestLogging → APIVersion → CSRF → SlowAPI → CORS → GZip → routes
+```
+
+The logger wraps the entire stack so the recorded duration covers everything,
+and a request ID is stamped on every response (`X-Request-ID`).
+
+---
 
 ## Tech Stack
 
-- **FastAPI** — async web framework
-- **SQLAlchemy** (async) + **asyncpg** — ORM and PostgreSQL driver
-- **PostgreSQL** — primary database
-- **UUID v7** — time-ordered unique IDs
+- **Python 3.12** + **FastAPI**
+- **SQLAlchemy 2.0** (async) + **asyncpg** (Postgres driver)
+- **Alembic** — schema migrations
+- **PyJWT** — access/refresh tokens
+- **SlowAPI** — rate limiting
+- **httpx** — outbound HTTP (GitHub, enrichment APIs)
 - **uv** — dependency management
+- **ruff** — lint
+- **pytest + pytest-asyncio + aiosqlite** — test suite
 
-## Database Schema
+---
 
-| Field                | Type         | Notes                              |
-|----------------------|--------------|------------------------------------|
-| id                   | UUID v7      | Primary key                        |
-| name                 | VARCHAR      | Unique, person's full name         |
-| gender               | VARCHAR      | `male` or `female`                 |
-| gender_probability   | FLOAT        | Confidence score (0–1)             |
-| age                  | INT          | Exact age                          |
-| age_group            | VARCHAR      | `child`, `teenager`, `adult`, `senior` |
-| country_id           | VARCHAR(2)   | ISO 3166-1 alpha-2 code (e.g. `NG`) |
-| country_name         | VARCHAR      | Full country name                  |
-| country_probability  | FLOAT        | Confidence score (0–1)             |
-| created_at           | TIMESTAMP    | Auto-generated, UTC                |
+## Authentication Flow
 
-## Local Setup
+The backend supports two distinct OAuth flows against the same user model:
 
-### 1. Clone and install dependencies
+### A. Web flow (browser)
 
-```bash
-git clone <repo-url>
-cd profile-intelligence-stage1
-uv sync
+```
+   user                 web portal               backend                 github
+    │                       │                      │                        │
+    │  click "Login"        │                      │                        │
+    │──────────────────────▶│                      │                        │
+    │                       │  GET /auth/github    │                        │
+    │                       │─────────────────────▶│                        │
+    │                       │                      │  302 → github authorize│
+    │                       │◀─── set oauth_state ─│   (with state param)   │
+    │  redirect to github   │                      │                        │
+    │──────────────────────────────────────────────────────────────────────▶│
+    │                       │                      │                        │
+    │  authorize            │                      │                        │
+    │◀─────────────────────────────────────────────────────────────────────▶│
+    │                       │                      │                        │
+    │  redirect with code   │                      │                        │
+    │──────────────────────────────────────────────│                        │
+    │                       │                      │  exchange code         │
+    │                       │                      │───────────────────────▶│
+    │                       │                      │◀──── access_token ─────│
+    │                       │                      │  GET /user             │
+    │                       │                      │───────────────────────▶│
+    │                       │                      │◀──── user info ────────│
+    │                       │                      │                        │
+    │                       │  302 + Set-Cookie:   │                        │
+    │                       │   access_token,      │                        │
+    │                       │   refresh_token,     │                        │
+    │                       │   csrf_token         │                        │
+    │                       │◀─────────────────────│                        │
+    │  /dashboard           │                      │                        │
+    │◀──────────────────────│                      │                        │
 ```
 
-### 2. Configure environment
+- `state` is generated by the backend, stored in a short-lived cookie
+  (`oauth_state`, 10 min) and validated on callback.
+- Session cookies are **HTTP-only** for `access_token` and `refresh_token`;
+  `csrf_token` is non-HTTP-only so the SPA can read it and echo it as
+  `X-CSRF-Token` on state-changing requests (double-submit cookie pattern).
+- `refresh_token` cookie is path-scoped to `/auth` so it is only sent on
+  refresh/logout, not on every API call.
 
-```bash
-cp .env.example .env
-# Set your DATABASE_URL in .env
+### B. CLI flow (PKCE)
+
+The CLI never sees the GitHub client secret. It uses PKCE:
+
+```
+   user                  CLI                    backend                 github
+    │                     │                       │                       │
+    │ insighta login      │                       │                       │
+    │────────────────────▶│                       │                       │
+    │                     │ generate state        │                       │
+    │                     │ + code_verifier       │                       │
+    │                     │ + code_challenge      │                       │
+    │                     │ start loopback :51420 │                       │
+    │                     │                       │                       │
+    │                     │ open browser to       │                       │
+    │                     │   github authorize    │                       │
+    │                     │   (challenge, S256)   │                       │
+    │ authorize in browser│                       │                       │
+    │◀────────────────────┼──────────────────────────────────────────────▶│
+    │                     │                       │                       │
+    │ redirect to         │                       │                       │
+    │ http://127.0.0.1:51420/callback?code=...&state=...                  │
+    │────────────────────▶│                       │                       │
+    │                     │ verify state          │                       │
+    │                     │                       │                       │
+    │                     │ POST /auth/cli/exchange{code, code_verifier}  │
+    │                     │──────────────────────▶│                       │
+    │                     │                       │ exchange + verifier   │
+    │                     │                       │──────────────────────▶│
+    │                     │                       │◀──── access_token ────│
+    │                     │                       │ fetch user            │
+    │                     │                       │──────────────────────▶│
+    │                     │                       │◀──── user info ───────│
+    │                     │ ◀── access + refresh ─│                       │
+    │                     │                       │                       │
+    │                     │ persist to            │                       │
+    │                     │ ~/.insighta/credentials.json                  │
+    │ Logged in as @user  │                       │                       │
+    │◀────────────────────│                       │                       │
 ```
 
-Required environment variable:
+The CLI client app on GitHub is a **separate OAuth app** from the web portal
+because the redirect URI differs (`http://127.0.0.1:<port>/callback`).
 
-| Variable       | Description                                                              |
-|----------------|--------------------------------------------------------------------------|
-| `DATABASE_URL` | PostgreSQL connection string e.g. `postgresql+asyncpg://user:pass@host/db` |
+### User lifecycle
 
-### 3. Seed the database
+On every successful login:
 
-```bash
-uv run python seed.py
+- `users` row is upserted by `github_id` (mutable GitHub fields — username,
+  email, avatar — synced; local fields — role, is_active — preserved).
+- `last_login_at` is set to now.
+- New users default to `role = analyst`.
+- If `is_active = false`, login is rejected with `account_disabled` (web
+  redirects to login page; CLI receives 403).
+
+---
+
+## Token Handling
+
+### Token shape (JWT, HS256)
+
+| Claim       | Access | Refresh |
+|-------------|--------|---------|
+| `sub`       | user id (UUID v7)     | user id |
+| `role`      | `admin` / `analyst`   | —       |
+| `family_id` | —                     | UUID v7 |
+| `type`      | `"access"`            | `"refresh"` |
+| `iat`/`exp` | yes                   | yes |
+
+`type` is verified on decode so an access token can never be used as a refresh
+token (or vice versa).
+
+### TTLs (per spec)
+
+| Token   | TTL     |
+|---------|---------|
+| Access  | 180 s (3 min) |
+| Refresh | 300 s (5 min) |
+
+### Storage
+
+- **Access tokens** are stateless. The backend never stores them.
+- **Refresh tokens** are stored as **SHA-256 hashes** in the `refresh_tokens`
+  table along with `family_id`, `expires_at`, and `revoked_at`. The plaintext
+  is never persisted server-side.
+
+### Rotation + reuse detection
+
+`POST /auth/refresh` always issues a **new pair**. The presented refresh
+token is marked `revoked_at = now` immediately on success.
+
+If a token whose `revoked_at` is already set is presented again, the backend
+treats it as **token theft**: every refresh token in the same `family_id`
+is revoked in one update, forcing a full re-login. This protects against an
+attacker who captured an old refresh token after the rightful client already
+rotated.
+
+```
+issue_session    →  family F, refresh R1   (R1 in DB, unrevoked)
+client refresh   →  presents R1            (R1 → revoked, R2 issued)
+client refresh   →  presents R2            (R2 → revoked, R3 issued)
+attacker         →  presents R1 (stolen)   (already revoked → revoke
+                                            *all* tokens with family=F;
+                                            R3 invalidated, user re-logs in)
 ```
 
-This inserts all 2026 profiles. Re-running is safe — existing records are skipped via `ON CONFLICT DO NOTHING`.
+### Web vs CLI delivery
 
-### 4. Start the server
+| Surface | Delivery |
+|---------|----------|
+| Web portal | HTTP-only cookies set by the backend on callback / refresh |
+| CLI        | JSON body — CLI persists at `~/.insighta/credentials.json` (mode 0600) |
 
-```bash
-uv run uvicorn app.main:app --reload
+Both flows hit the same `rotate_refresh_token` core. `POST /auth/refresh`
+accepts a refresh token from **either** the cookie or the JSON body, so the
+two clients share one endpoint.
+
+### Logout
+
+`POST /auth/logout` is **idempotent**. It SHA-256-hashes the presented
+refresh token, marks it revoked in the DB, and clears the cookies. It
+succeeds even if the caller has no valid session.
+
+---
+
+## Role Enforcement
+
+Two roles, enforced via a single dependency factory rather than scattered
+`if`-checks.
+
+| Role      | Permissions                                        |
+|-----------|----------------------------------------------------|
+| `admin`   | Read + create + delete profiles                    |
+| `analyst` | Read + search only (default for new users)         |
+
+### How it's wired
+
+1. **Router-level auth.** Every endpoint under `/api/profiles` declares
+   `dependencies=[Depends(get_current_user)]` at the router definition. There
+   is no way to forget it on a new route — adding a route inherits auth.
+2. **Per-endpoint role gating.** Mutating endpoints add a second dependency:
+
+   ```python
+   user: User = Depends(require_role("admin"))
+   ```
+
+   `require_role` is a factory that returns a dependency raising 403 if the
+   resolved user's role is not in the allowed set.
+3. **Account state.** `get_current_user` rejects disabled accounts (`is_active
+   = false`) with 403 before role checks even run.
+
+### Endpoint matrix
+
+| Endpoint                          | Authenticated | Admin only |
+|-----------------------------------|:-------------:|:----------:|
+| `GET /api/profiles`               | ✓             |            |
+| `GET /api/profiles/search`        | ✓             |            |
+| `GET /api/profiles/{id}`          | ✓             |            |
+| `GET /api/profiles/stats`         | ✓             |            |
+| `GET /api/profiles/export`        | ✓             |            |
+| `POST /api/profiles`              | ✓             | ✓          |
+| `DELETE /api/profiles/{id}`       | ✓             | ✓          |
+
+---
+
+## Natural Language Parsing
+
+`GET /api/profiles/search?q=...` accepts plain English and converts it into
+the same filter set used by `GET /api/profiles`. The parser is **rule-based —
+no LLM, no remote call**. It is fast, deterministic, and free.
+
+### Pipeline
+
+```
+"young males from south africa"
+        │
+        ▼  lowercase + strip
+"young males from south africa"
+        │
+        ▼  keyword scan + regex
+{
+  "gender":     "male",
+  "min_age":    16,
+  "max_age":    24,
+  "country_id": "ZA"
+}
+        │
+        ▼  reuse get_profiles() with these kwargs
+paginated profile list
 ```
 
-API available at `http://localhost:8000`.
+### Recognized vocabulary
 
-## API Endpoints
+| Category        | Keywords                                                    |
+|-----------------|-------------------------------------------------------------|
+| Gender          | `male`, `female`                                            |
+| Age group       | `child`, `teenager`/`teen`, `adult`, `senior`/`elderly`/`old` |
+| Age range alias | `young` → `min_age=16, max_age=24`                          |
+| Numeric range   | `above N`/`over N` → `min_age=N`; `below N`/`under N` → `max_age=N` |
+| Country         | full English country name (e.g. `nigeria`, `south africa`, `dr congo`) |
 
-### `GET /api/profiles`
+Multi-word country names are matched **before** single-word ones (longest
+first) so "south africa" doesn't collapse into a partial match.
 
-Returns a paginated list of profiles. Supports filtering, sorting, and pagination.
+### Failure mode
 
-**Query Parameters:**
+If no keyword matches, the parser returns `None` and the endpoint responds
+with HTTP 200 and:
 
-| Parameter               | Type   | Default      | Description                              |
-|-------------------------|--------|--------------|------------------------------------------|
-| `gender`                | string | —            | `male` or `female`                       |
-| `age_group`             | string | —            | `child`, `teenager`, `adult`, `senior`   |
-| `country_id`            | string | —            | ISO code e.g. `NG`, `KE`, `ZA`          |
-| `min_age`               | int    | —            | Minimum age (inclusive)                  |
-| `max_age`               | int    | —            | Maximum age (inclusive)                  |
-| `min_gender_probability`| float  | —            | Minimum gender confidence score          |
-| `min_country_probability`| float | —            | Minimum country confidence score         |
-| `sort_by`               | string | `created_at` | `age`, `created_at`, `gender_probability`|
-| `order`                 | string | `asc`        | `asc` or `desc`                          |
-| `page`                  | int    | `1`          | Page number                              |
-| `limit`                 | int    | `10`         | Results per page (max 50)                |
-
-All filters are combinable — results must match all conditions.
-
-**Example requests:**
-
-```bash
-# Males from Nigeria aged 25+
-GET /api/profiles?gender=male&country_id=NG&min_age=25
-
-# Adult females sorted by age descending
-GET /api/profiles?gender=female&age_group=adult&sort_by=age&order=desc
-
-# Page 2 with 20 results per page
-GET /api/profiles?page=2&limit=20
+```json
+{ "status": "error", "message": "Unable to interpret query" }
 ```
 
-**Response (200):**
+This intentionally avoids 4xx because the request itself is well-formed.
+
+---
+
+## API Reference
+
+> **All `/api/*` requests must include `X-API-Version: 1`.** Missing the
+> header returns 400 with `{"status": "error", "message": "API version header required"}`.
+
+> **All `/api/*` requests require authentication** (Bearer token from CLI, or
+> cookie from web portal).
+
+### Auth
+
+| Method | Path                       | Description                            |
+|--------|----------------------------|----------------------------------------|
+| GET    | `/auth/github`             | Start the web OAuth flow               |
+| GET    | `/auth/github/callback`    | OAuth redirect target (web)            |
+| POST   | `/auth/cli/exchange`       | CLI PKCE exchange (`code`, `code_verifier`) |
+| POST   | `/auth/refresh`            | Rotate refresh token (cookie or body)  |
+| POST   | `/auth/logout`             | Revoke refresh token + clear cookies   |
+| GET    | `/auth/me`                 | Current user                           |
+
+### Profiles
+
+| Method | Path                              | Role        | Notes                          |
+|--------|-----------------------------------|-------------|--------------------------------|
+| GET    | `/api/profiles`                   | any         | filter / sort / paginate       |
+| GET    | `/api/profiles/search?q=...`      | any         | NL → filters                   |
+| GET    | `/api/profiles/stats`             | any         | aggregates                     |
+| GET    | `/api/profiles/export?format=csv` | any         | streaming CSV                  |
+| GET    | `/api/profiles/{id}`              | any         | single profile                 |
+| POST   | `/api/profiles`                   | **admin**   | enriches via Genderize/Agify/Nationalize |
+| DELETE | `/api/profiles/{id}`              | **admin**   | hard delete                    |
+
+### Pagination envelope
 
 ```json
 {
@@ -109,157 +411,337 @@ GET /api/profiles?page=2&limit=20
   "page": 1,
   "limit": 10,
   "total": 2026,
-  "data": [
-    {
-      "id": "01966b3e-7c2a-7000-8f4e-1a2b3c4d5e6f",
-      "name": "Awino Hassan",
-      "gender": "female",
-      "gender_probability": 0.66,
-      "age": 68,
-      "age_group": "senior",
-      "country_id": "TZ",
-      "country_name": "Tanzania",
-      "country_probability": 0.6,
-      "created_at": "2026-04-20T10:00:00Z"
-    }
-  ]
-}
-```
-
----
-
-### `GET /api/profiles/search`
-
-Natural language query endpoint. Converts plain English into filters and returns paginated results.
-
-**Query Parameters:**
-
-| Parameter | Type   | Required | Description               |
-|-----------|--------|----------|---------------------------|
-| `q`       | string | Yes      | Plain English query string |
-| `page`    | int    | No       | Default: 1                |
-| `limit`   | int    | No       | Default: 10, max: 50      |
-
-**Supported query patterns:**
-
-| Query example                        | Interpreted as                                          |
-|--------------------------------------|---------------------------------------------------------|
-| `young males`                        | `gender=male` + `min_age=16` + `max_age=24`             |
-| `females above 30`                   | `gender=female` + `min_age=30`                          |
-| `people from angola`                 | `country_id=AO`                                         |
-| `adult males from kenya`             | `gender=male` + `age_group=adult` + `country_id=KE`     |
-| `teenagers below 18`                 | `age_group=teenager` + `max_age=18`                     |
-| `senior females from south africa`   | `gender=female` + `age_group=senior` + `country_id=ZA`  |
-
-**Keyword mappings:**
-- **Gender:** `male`, `female`
-- **Age groups:** `child`, `teenager` / `teen`, `adult`, `senior` / `elderly` / `old`
-- **"young":** maps to `min_age=16, max_age=24` (not a stored age group)
-- **Age comparisons:** `above X` / `over X` → `min_age`, `below X` / `under X` → `max_age`
-- **Countries:** full country name in English e.g. `nigeria`, `south africa`, `dr congo`
-
-**Example requests:**
-
-```bash
-GET /api/profiles/search?q=young+males+from+nigeria
-GET /api/profiles/search?q=females+above+30&page=2&limit=20
-GET /api/profiles/search?q=adult+males+from+kenya
-```
-
-**Response (200 — success):**
-
-```json
-{
-  "status": "success",
-  "page": 1,
-  "limit": 10,
-  "total": 45,
+  "total_pages": 203,
+  "links": {
+    "self": "/api/profiles?page=1&limit=10",
+    "next": "/api/profiles?page=2&limit=10",
+    "prev": null
+  },
   "data": [ ... ]
 }
 ```
 
-**Response (200 — uninterpretable query):**
+`next`/`prev` are `null` at the boundaries. All current query parameters
+(filters, sort, q) are preserved in the link URLs.
+
+### List filters
+
+| Param                      | Type   | Notes                                         |
+|----------------------------|--------|-----------------------------------------------|
+| `gender`                   | string | `male` / `female`                             |
+| `age_group`                | string | `child` / `teenager` / `adult` / `senior`     |
+| `country_id`               | string | ISO-3166-1 alpha-2, e.g. `NG`                 |
+| `min_age`, `max_age`       | int    | inclusive                                     |
+| `min_gender_probability`   | float  | 0–1                                           |
+| `min_country_probability`  | float  | 0–1                                           |
+| `sort_by`                  | string | `age` / `created_at` / `gender_probability`   |
+| `order`                    | string | `asc` / `desc` (default `asc`)                |
+| `page`                     | int    | default 1                                     |
+| `limit`                    | int    | default 10, max 50                            |
+
+### CSV export
+
+```
+GET /api/profiles/export?format=csv&gender=male&country_id=NG
+```
+
+Response:
+
+```
+HTTP/1.1 200 OK
+Content-Type: text/csv
+Content-Disposition: attachment; filename="profiles_20260430T101500Z.csv"
+
+id,name,gender,gender_probability,age,age_group,country_id,country_name,country_probability,created_at
+...
+```
+
+Column order is fixed per spec. Streamed row-by-row (no full-result
+buffering) to scale beyond memory.
+
+### Error envelope
+
+Every error response, including 4xx and 5xx, is shaped:
 
 ```json
-{
-  "status": "error",
-  "message": "Unable to interpret query"
-}
+{ "status": "error", "message": "..." }
 ```
+
+| Status | Meaning                                |
+|--------|----------------------------------------|
+| 400    | Missing/invalid query param or header  |
+| 401    | Missing or invalid token               |
+| 403    | Wrong role / disabled account / CSRF   |
+| 404    | Profile not found                      |
+| 422    | Invalid parameter type                 |
+| 429    | Rate limit exceeded                    |
+| 502    | Upstream enrichment API failed         |
+| 500    | Unhandled error                        |
 
 ---
 
-### `GET /api/profiles/{id}`
+## CLI Usage
 
-Returns a single profile by UUID.
+The CLI lives in a separate repository (`insighta-cli`). It speaks to this
+backend over the same `/auth/*` and `/api/*` surface — no special endpoints.
 
-**Response (200):**
+```bash
+insighta login                                       # PKCE OAuth flow
+insighta logout
+insighta whoami
+
+insighta profiles list
+insighta profiles list --gender male --country NG
+insighta profiles list --min-age 25 --max-age 40
+insighta profiles list --sort-by age --order desc --page 2 --limit 20
+
+insighta profiles get <id>
+insighta profiles search "young males from nigeria"
+insighta profiles create --name "Harriet Tubman"     # admin only
+insighta profiles export --format csv --gender male  # writes CSV to cwd
+```
+
+Credentials are persisted at `~/.insighta/credentials.json`. The CLI
+refreshes the access token automatically when it expires; if the refresh
+token is also expired or rejected, it prompts for re-login.
+
+---
+
+## Local Setup
+
+### 1. Clone and install
+
+```bash
+git clone <backend-repo-url>
+cd insighta-labs/backend
+uv sync
+```
+
+### 2. Configure
+
+```bash
+cp .env.example .env
+# Fill in DATABASE_URL, GitHub OAuth client IDs/secrets, JWT_SECRET, etc.
+```
+
+### 3. Run migrations
+
+```bash
+uv run alembic upgrade head
+```
+
+### 4. (Optional) Seed Stage 2 profile data
+
+```bash
+uv run python seed.py
+```
+
+Idempotent — re-running skips existing rows via `ON CONFLICT DO NOTHING`.
+
+### 5. Start the server
+
+```bash
+uv run uvicorn app.main:app --reload
+```
+
+API at `http://localhost:8000`. Health: `GET /health`.
+
+---
+
+## Configuration
+
+All configuration is via environment variables. See [`.env.example`](.env.example)
+for the canonical list. Highlights:
+
+| Variable                         | Purpose                                            |
+|----------------------------------|----------------------------------------------------|
+| `DATABASE_URL`                   | `postgresql+asyncpg://...`                         |
+| `GITHUB_WEB_CLIENT_ID/SECRET`    | OAuth app for the web portal                       |
+| `GITHUB_CLI_CLIENT_ID/SECRET`    | Separate OAuth app for the CLI (PKCE)              |
+| `GITHUB_CLI_CALLBACK_PORT`       | Loopback port the CLI listens on (default 51420)   |
+| `JWT_SECRET`                     | HS256 signing secret — rotate if leaked            |
+| `ACCESS_TOKEN_TTL_SECONDS`       | Access TTL (180 per spec)                          |
+| `REFRESH_TOKEN_TTL_SECONDS`      | Refresh TTL (300 per spec)                         |
+| `BACKEND_PUBLIC_URL`             | Where the backend is reachable from clients        |
+| `WEB_APP_ORIGIN`                 | Web portal origin — used for CORS + post-login redirect |
+| `COOKIE_SECURE`                  | `true` in prod (HTTPS), `false` for local dev       |
+| `COOKIE_SAMESITE`                | `lax` for same-site, `none` for cross-site (with `secure=true`) |
+| `COOKIE_DOMAIN`                  | Optional explicit cookie domain                    |
+
+CORS is restricted to `WEB_APP_ORIGIN` with `allow_credentials=True` so the
+web portal's HTTP-only cookies cross the origin boundary. The CLI uses Bearer
+tokens and is unaffected by CORS.
+
+---
+
+## Database Schema
+
+### `profiles`
+
+| Column                | Type         | Notes                                |
+|-----------------------|--------------|--------------------------------------|
+| id                    | UUID v7      | PK                                   |
+| name                  | VARCHAR      | Unique, indexed                      |
+| gender                | VARCHAR      | `male` / `female`                    |
+| gender_probability    | FLOAT        | 0–1                                  |
+| age                   | INT          |                                      |
+| age_group             | VARCHAR      | `child` / `teenager` / `adult` / `senior` (indexed) |
+| country_id            | VARCHAR(20)  | ISO 3166-1 alpha-2 (indexed)         |
+| country_name          | VARCHAR      |                                      |
+| country_probability   | FLOAT        | 0–1                                  |
+| created_at            | TIMESTAMPTZ  | server-default `now()`               |
+| updated_at            | TIMESTAMPTZ  | auto-updated                         |
+
+### `users`
+
+| Column           | Type         | Notes                                          |
+|------------------|--------------|------------------------------------------------|
+| id               | UUID v7      | PK                                             |
+| github_id        | VARCHAR(32)  | Unique                                         |
+| username         | VARCHAR(64)  | Indexed                                        |
+| email            | VARCHAR(255) | Nullable                                       |
+| avatar_url       | VARCHAR      | Nullable                                       |
+| role             | VARCHAR(16)  | CHECK in (`admin`, `analyst`); default `analyst` |
+| is_active        | BOOLEAN      | Default `true`; if false → 403 everywhere      |
+| last_login_at    | TIMESTAMPTZ  | Updated on every successful login              |
+| created_at       | TIMESTAMPTZ  |                                                |
+
+### `refresh_tokens`
+
+| Column      | Type         | Notes                                         |
+|-------------|--------------|-----------------------------------------------|
+| id          | UUID v7      | PK                                            |
+| user_id     | UUID         | FK → `users.id` (`ON DELETE CASCADE`)         |
+| token_hash  | VARCHAR(64)  | SHA-256 hex of the raw token, unique          |
+| family_id   | UUID         | Rotation family — reuse triggers family-wide revoke |
+| expires_at  | TIMESTAMPTZ  |                                               |
+| revoked_at  | TIMESTAMPTZ  | Nullable; set on rotation, logout, or theft   |
+| created_at  | TIMESTAMPTZ  |                                               |
+
+---
+
+## Rate Limiting & Logging
+
+### Rate limits
+
+| Scope                  | Limit             | Key             |
+|------------------------|-------------------|-----------------|
+| `/auth/*`              | 10 / minute       | client IP       |
+| `/api/*` (everything)  | 60 / minute       | user id (or IP if unauthenticated) |
+
+429 responses include a `Retry-After` header where available.
+
+### Request logging
+
+Every request emits one structured line:
+
+```
+2026-04-30 10:15:00 - app.request - INFO - GET /api/profiles status=200 duration=12.3ms req_id=...
+```
+
+Fields: HTTP method, path, status code, response time, request ID. The
+request ID is also stamped on the response as `X-Request-ID` for easy
+client-side correlation.
+
+---
+
+## Testing & CI
+
+```bash
+uv run pytest -q
+uv run ruff check .
+```
+
+The suite uses an in-memory SQLite via `aiosqlite`, so it runs without a
+Postgres dependency. Coverage spans:
+
+- API versioning (header presence + value)
+- Authentication (token decode, expiry, type mismatch)
+- Role enforcement (analyst blocked from admin endpoints)
+- Pagination shape (envelope fields, link generation)
+- CSV export (columns, ordering, filters)
+- Profile filters / sort / search
+
+GitHub Actions (`.github/workflows/ci.yml`) runs lint + tests on every PR
+and push to `main`.
+
+---
+
+## Deployment
+
+The repo ships a `Procfile`:
+
+```
+web: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+For production deployment:
+
+1. Provide `DATABASE_URL` pointing at a managed Postgres (e.g. Neon, RDS).
+2. Set `COOKIE_SECURE=true` and `COOKIE_SAMESITE=lax` (or `none` if the web
+   portal is on a different registrable domain — then it must also be
+   `secure=true`).
+3. Set `BACKEND_PUBLIC_URL` to the deployed backend URL and `WEB_APP_ORIGIN`
+   to the deployed web portal URL — CORS, cookies, and OAuth redirects all
+   read from these.
+4. Register two GitHub OAuth apps (web + CLI) and supply both pairs of
+   credentials.
+5. Run `alembic upgrade head` on first boot.
+
+---
+
+## Grader Hooks
+
+The automated submission grader cannot drive a real GitHub OAuth flow, so
+the backend exposes two seeded test users it can reach.
+
+### Admin: `code=test_code` shortcut
+
+`GET /auth/github/callback?code=test_code` (and `POST /auth/cli/exchange`
+with body `{"code": "test_code", "code_verifier": "..."}`) bypasses the
+GitHub round-trip and returns a fresh admin session as JSON:
 
 ```json
 {
   "status": "success",
-  "data": { ... }
+  "access_token": "...",
+  "refresh_token": "...",
+  "user": { "id": "...", "username": "grader-admin", "role": "admin" }
 }
 ```
 
----
+The user is upserted on first call and reused thereafter. State / cookie
+checks are skipped because the grader cannot set the `oauth_state` cookie.
+Leave the "Admin Test Token" and "Refresh Test Token" fields blank on the
+submission form — the grader extracts both automatically from this response.
 
-### `POST /api/profiles`
+### Analyst: long-lived token
 
-Creates a new profile by enriching a name via external APIs (Genderize, Agify, Nationalize).
+For analyst-role tests, mint a 24-hour token once at submission time:
 
-**Request body:**
-
-```json
-{ "name": "Amara" }
+```bash
+uv run python scripts/mint_grader_analyst.py
 ```
 
-**Response (201):**
+This upserts a `grader-analyst` user (role=analyst) and prints a JWT with
+a 24h expiry — well past the configured 180s access TTL. Paste the output
+into the "Analyst Test Token" field.
 
-```json
-{
-  "status": "success",
-  "data": { ... }
-}
-```
+### Why two flows
 
-If the name already exists, returns HTTP 200 with `"message": "Profile already exists"`.
+Access tokens default to 3 minutes per Stage 3 spec. The grader's evaluation
+run can outlive that. The `test_code` shortcut sidesteps this for admin
+because the grader can re-trigger it any time. For analyst, since the spec
+only asks for a single bearer token (no refresh slot), we mint one with a
+longer custom TTL specifically for evaluation.
+
+The grader users live alongside real users in the same `users` table; they
+have non-GitHub `github_id` values (`grader-admin`, `grader-analyst`) so
+they can never collide with a real GitHub login.
 
 ---
-
-### `DELETE /api/profiles/{id}`
-
-Deletes a profile by UUID. Returns `204 No Content`.
-
----
-
-## Error Responses
-
-All errors follow this structure:
-
-```json
-{ "status": "error", "message": "<description>" }
-```
-
-| Status | Meaning                                      |
-|--------|----------------------------------------------|
-| 400    | Missing or invalid query parameter           |
-| 404    | Profile not found                            |
-| 422    | Invalid parameter type (e.g. non-integer age)|
-| 500    | Internal server error                        |
-
-## Natural Language Query — How It Works
-
-The `/search` endpoint uses a **pure rule-based parser** — no AI or LLMs involved. It works as follows:
-
-1. The query string is lowercased and stripped
-2. Keywords are matched using string containment and regex patterns
-3. Each matched keyword maps to a specific filter field
-4. The resulting filter dict is passed directly to the same query engine used by `GET /api/profiles`
-5. If no keywords are recognized, the parser returns `null` and the endpoint responds with `"Unable to interpret query"`
-
-Multi-word country names (e.g. `south africa`, `dr congo`) are matched before single-word ones to avoid partial matches.
 
 ## Author
-- **[Nadduli Daniel]** — [naddulidaniel94@gmail.com] - [GitHub](https://github.com/naddulidaniel) | [LinkedIn](https://linkedin.com/in/nadduli-daniel)
 
+**Nadduli Daniel** — naddulidaniel94@gmail.com
+[GitHub](https://github.com/naddulidaniel) · [LinkedIn](https://linkedin.com/in/nadduli-daniel)

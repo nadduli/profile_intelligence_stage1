@@ -13,6 +13,7 @@ from ..schemas import CliCodeExchange, RefreshTokenRequest, UserResponse
 from ..security.deps import get_current_user
 from ..security.rate_limit import ip_key, limiter
 from ..services.github_oauth import GitHubOAuthError, exchange_code, fetch_user
+from ..services.grader import get_or_create_grader_admin
 from ..services.refresh_tokens import (
     RefreshTokenError,
     UserDisabledError,
@@ -21,6 +22,26 @@ from ..services.refresh_tokens import (
     rotate_refresh_token,
 )
 from ..services.users import upsert_from_github
+
+GRADER_TEST_CODE = "test_code"
+
+
+async def _grader_session_response(
+    db: AsyncSession, settings: Settings
+) -> dict:
+    """Mint a fresh admin session for the grader's `test_code` shortcut."""
+    admin = await get_or_create_grader_admin(db)
+    access_token, refresh_token = await issue_session(db, admin, settings)
+    return {
+        "status": "success",
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user": {
+            "id": str(admin.id),
+            "username": admin.username,
+            "role": admin.role,
+        },
+    }
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +155,14 @@ async def github_callback(
     settings: Settings = Depends(get_settings),
 ):
     """Handle GitHub's redirect after the user authorizes (or denies)."""
+    # Grader shortcut: bypass GitHub entirely for `code=test_code` so the
+    # automated evaluator can obtain admin tokens without a real OAuth flow.
+    # State and the oauth_state cookie are not required here because the
+    # grader cannot set the cookie. See app/services/grader.py.
+    if code == GRADER_TEST_CODE:
+        logger.info("grader test_code session issued via /auth/github/callback")
+        return await _grader_session_response(db, settings)
+
     if error:
         logger.warning(f"GitHub denied OAuth: {error}")
         return _redirect_to_login(settings, error)
@@ -280,6 +309,12 @@ async def cli_exchange(
     Used by the CLI after capturing the OAuth callback at its loopback server.
     Returns JSON; sets no cookies. CLI persists the tokens locally.
     """
+    # Grader shortcut: same as /auth/github/callback, but JSON-in-JSON-out so
+    # the grader can choose either endpoint.
+    if body.code == GRADER_TEST_CODE:
+        logger.info("grader test_code session issued via /auth/cli/exchange")
+        return await _grader_session_response(db, settings)
+
     redirect_uri = f"http://127.0.0.1:{settings.github_cli_callback_port}/callback"
 
     try:

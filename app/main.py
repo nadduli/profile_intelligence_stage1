@@ -10,12 +10,15 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
+from .config import get_settings
 from .database import engine
 from .middleware.api_version import APIVersionMiddleware
 from .middleware.csrf import CSRFMiddleware
 from .middleware.request_logging import RequestLoggingMiddleware
 from .routers import auth, profiles
 from .security.rate_limit import limiter
+
+settings = get_settings()
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -50,10 +53,11 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=[settings.web_app_origin],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(CSRFMiddleware)
@@ -64,11 +68,6 @@ app.add_middleware(RequestLoggingMiddleware)
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     logger.warning(f"HTTP Exception: {exc.status_code} - {exc.detail}")
-    if exc.status_code == 502:
-        return JSONResponse(
-            status_code=502,
-            content={"status": "502", "message": exc.detail},
-        )
     return JSONResponse(
         status_code=exc.status_code,
         content={"status": "error", "message": exc.detail},

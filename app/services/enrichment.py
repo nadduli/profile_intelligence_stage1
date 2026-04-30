@@ -2,9 +2,20 @@ import asyncio
 import logging
 
 import httpx
+import pycountry
 from fastapi import HTTPException, status
 
 logger = logging.getLogger(__name__)
+
+
+def _country_name(country_id: str) -> str:
+    """Resolve an ISO-3166-1 alpha-2 code to a full country name.
+
+    Falls back to the code itself if the lookup misses (rare but possible
+    if Nationalize returns a code pycountry doesn't recognize).
+    """
+    record = pycountry.countries.get(alpha_2=country_id.upper())
+    return record.name if record else country_id
 
 
 async def fetch_enrichment_data(name: str) -> tuple[dict, dict, dict]:
@@ -111,13 +122,14 @@ async def parse_enrichment_data(
     age = agify["age"]
     age_group = classify_age_group(age)
 
+    country_id = top_country["country_id"]
     return {
         "gender": genderize["gender"],
         "gender_probability": genderize["probability"],
-        "sample_size": genderize["count"],
         "age": age,
         "age_group": age_group,
-        "country_id": top_country["country_id"],
+        "country_id": country_id,
+        "country_name": _country_name(country_id),
         "country_probability": top_country["probability"],
     }
 
