@@ -1,3 +1,4 @@
+import pytest
 import pytest_asyncio
 import uuid_extensions
 from httpx import ASGITransport, AsyncClient
@@ -5,8 +6,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.database import Base, get_db
 from app.main import app
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import Profile, User
 from app.services.tokens import encode_access_token
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Wipe rate-limit state between tests so per-test request bursts don't bleed."""
+    RateLimitMiddleware.reset()
+    yield
+    RateLimitMiddleware.reset()
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 

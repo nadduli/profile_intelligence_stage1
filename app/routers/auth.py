@@ -164,12 +164,30 @@ async def github_callback(
         return await _grader_session_response(db, settings)
 
     if error:
+        # Genuine GitHub-side failure (user denied, etc.) — friendly redirect.
         logger.warning(f"GitHub denied OAuth: {error}")
         return _redirect_to_login(settings, error)
 
-    if not code or not state or not oauth_state or state != oauth_state:
-        logger.warning("OAuth state mismatch or missing parameters")
-        return _redirect_to_login(settings, "state_mismatch")
+    # Hard rejections for malformed callbacks. Real OAuth round-trips always
+    # carry both `code` and `state`; missing/mismatched values mean the
+    # request is programmatic, stale, or a tamper attempt — return 400 with
+    # the standard error envelope rather than redirecting silently.
+    if not code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing required parameter: code",
+        )
+    if not state:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing required parameter: state",
+        )
+    if not oauth_state or state != oauth_state:
+        logger.warning("OAuth state mismatch")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid OAuth state",
+        )
 
     try:
         gh_access_token = await exchange_code(
@@ -208,7 +226,17 @@ async def github_callback(
         csrf_token=csrf_token,
         settings=settings,
     )
-    response.delete_cookie("oauth_state", path="/auth/github/callback")
+    # Explicit overwrite (max_age=0) preserves the HttpOnly + security flags
+    # on the Set-Cookie header. response.delete_cookie() drops HttpOnly, which
+    # makes security scanners flag the deletion response.
+    _set_cookie(
+        response,
+        name="oauth_state",
+        value="",
+        max_age=0,
+        path="/auth/github/callback",
+        settings=settings,
+    )
     return response
 
 @router.get("/me", response_model=UserResponse)
@@ -288,11 +316,20 @@ async def logout(
         await revoke_by_token(db, raw_token)
 
     response = JSONResponse({"status": "success"})
-    response.delete_cookie("access_token", path="/", domain=settings.cookie_domain)
-    response.delete_cookie(
-        "refresh_token", path="/auth", domain=settings.cookie_domain
+    # Overwrite-with-empty so the deletion Set-Cookie headers carry the same
+    # security flags (HttpOnly, Secure, SameSite) as the originals.
+    _set_cookie(
+        response, name="access_token", value="", max_age=0, path="/",
+        settings=settings,
     )
-    response.delete_cookie("csrf_token", path="/", domain=settings.cookie_domain)
+    _set_cookie(
+        response, name="refresh_token", value="", max_age=0, path="/auth",
+        settings=settings,
+    )
+    _set_cookie(
+        response, name="csrf_token", value="", max_age=0, path="/",
+        settings=settings, http_only=False,
+    )
     return response
 
 

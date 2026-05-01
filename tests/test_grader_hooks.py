@@ -53,15 +53,24 @@ async def test_test_code_reuses_admin_and_rotates_session(unauth_client):
     assert a["refresh_token"] != b["refresh_token"]
 
 
-async def test_real_oauth_path_unaffected(unauth_client):
-    """Non-test_code requests still go through the normal validation path."""
+async def test_real_oauth_path_rejects_mismatched_state(unauth_client):
+    """A non-test_code request with bad state returns 400 (Stage 3 spec)."""
     response = await unauth_client.get(
         "/auth/github/callback?code=real_code&state=mismatched"
     )
-    # Without a matching oauth_state cookie this should redirect to /login,
-    # NOT short-circuit to the grader response.
-    assert response.status_code in (302, 200)
-    if response.status_code == 200:
-        body = response.json()
-        # If JSON came back, it must NOT be a grader admin session.
-        assert body.get("user", {}).get("username") != "grader-admin"
+    assert response.status_code == 400
+    body = response.json()
+    assert body["status"] == "error"
+    assert "state" in body["message"].lower()
+
+
+async def test_callback_rejects_missing_code(unauth_client):
+    response = await unauth_client.get("/auth/github/callback?state=anything")
+    assert response.status_code == 400
+    assert "code" in response.json()["message"].lower()
+
+
+async def test_callback_rejects_missing_state(unauth_client):
+    response = await unauth_client.get("/auth/github/callback?code=anything")
+    assert response.status_code == 400
+    assert "state" in response.json()["message"].lower()
