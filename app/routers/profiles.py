@@ -6,17 +6,18 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models import Profile, User
-from ..schemas import ProfileCreate, ProfileResponse
+from ..schemas import ProfileCreate, ProfileResponse, UploadSummary
 from ..security.deps import get_current_user, require_role
 from ..security.rate_limit import limiter, user_id_or_ip
 from ..services import query_cache
+from ..services.csv_ingest import ingest_csv_stream
 from ..services.enrichment import enrich_name
 from ..services.profile import (
     create_profile,
@@ -238,6 +239,61 @@ async def get_stats_endpoint(
     """Return aggregate statistics across all profiles."""
     stats = await get_stats_cached(db)
     return {"status": "success", "data": stats}
+
+
+@router.post("/upload", response_model=UploadSummary)
+@limiter.limit("60/minute", key_func=user_id_or_ip)
+async def upload_profiles_csv(
+    request: Request,
+    file: UploadFile = File(...),
+    user: User = Depends(require_role("admin")),
+):
+    """Bulk-upload profiles from a CSV file. Admin-only.
+
+    Streams the file (no full-buffer load), validates each row, and
+    inserts in chunks of 5,000 via COPY ... FROM STDIN. Bad rows are
+    skipped (never fatal). Duplicate names are skipped via
+    ON CONFLICT (name) DO NOTHING — same idempotency rule as
+    POST /api/profiles. Returns a summary of total/inserted/skipped
+    counts plus a per-reason breakdown.
+
+    On partial failure (a chunk errors mid-file), already-inserted
+    chunks remain — no global rollback. The summary is whatever was
+    counted up to the failure.
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Expected a .csv file",
+        )
+
+    # Wrap the binary upload stream for csv.DictReader. errors='replace'
+    # so a single broken-encoding byte becomes �; the row's
+    # validation will catch any resulting invalid field rather than
+    # raising mid-stream and aborting the whole upload.
+    text_stream = io.TextIOWrapper(file.file, encoding="utf-8", errors="replace")
+
+    try:
+        summary = await ingest_csv_stream(text_stream)
+    except ValueError as e:
+        # Header missing / wrong — the CSV itself is unusable
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        )
+
+    logger.info(
+        f"Admin {user.username} uploaded {file.filename}: "
+        f"{summary.inserted} inserted, {summary.skipped} skipped of "
+        f"{summary.total_rows} total"
+    )
+
+    return UploadSummary(
+        status="success",
+        total_rows=summary.total_rows,
+        inserted=summary.inserted,
+        skipped=summary.skipped,
+        reasons=summary.reasons,
+    )
 
 
 @router.get("/export")

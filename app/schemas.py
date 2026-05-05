@@ -54,3 +54,17 @@ class RefreshTokenRequest(BaseModel):
 class CliCodeExchange(BaseModel):
     code: str
     code_verifier: str
+
+
+class UploadSummary(BaseModel):
+    """Response shape for POST /api/profiles/upload.
+
+    `reasons` is an open dict of skip-reason → count so we can add new
+    validation categories without changing the schema.
+    """
+
+    status: str = "success"
+    total_rows: int
+    inserted: int
+    skipped: int
+    reasons: dict[str, int]

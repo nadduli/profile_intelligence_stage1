@@ -21,6 +21,7 @@ dependencies = [
     "slowapi>=0.1.9",
     "pycountry>=26.2.16",
     "cachetools>=7.1.1",
+    "python-multipart>=0.0.27",
 ]
 
 [project.optional-dependencies]
