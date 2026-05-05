@@ -4,19 +4,43 @@ import uuid_extensions
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import get_settings
 from app.database import Base, get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import Profile, User
+from app.security.rate_limit import limiter
+from app.services import query_cache
+from app.services import users as user_service
 from app.services.tokens import encode_access_token
 
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter():
-    """Wipe rate-limit state between tests so per-test request bursts don't bleed."""
+    """Wipe rate-limit + query-cache state between tests.
+
+    - rate-limit buckets: cleared so per-test bursts don't bleed.
+    - query cache: cleared so test_X's cached profile list doesn't
+      leak into test_Y after Y resets the DB.
+    - rate_limit_enabled is forced True for the duration of the test, so
+      the suite mirrors production behaviour even when the dev .env has
+      set RATE_LIMIT_ENABLED=false (used for benchmarking, not test runs).
+    """
+    settings = get_settings()
+    original = settings.rate_limit_enabled
+    settings.rate_limit_enabled = True
+    limiter.enabled = True
+
     RateLimitMiddleware.reset()
+    query_cache._cache.clear()
+    user_service._user_cache.clear()
     yield
     RateLimitMiddleware.reset()
+    query_cache._cache.clear()
+    user_service._user_cache.clear()
+
+    settings.rate_limit_enabled = original
+    limiter.enabled = original
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 

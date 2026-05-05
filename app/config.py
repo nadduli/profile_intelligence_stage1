@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     cookie_samesite: str = "lax"
     cookie_domain: str | None = None
 
+    # Production: True (enforce per-spec limits).
+    # Local dev / benchmarking: False to avoid 429s during measurement.
+    # NEVER set to false on Railway / production — leave the env var unset
+    # so the default applies.
+    rate_limit_enabled: bool = True
+
 @lru_cache()
 def get_settings() -> Settings:
     """Get application settings."""

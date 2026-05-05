@@ -16,6 +16,7 @@ from ..models import Profile, User
 from ..schemas import ProfileCreate, ProfileResponse
 from ..security.deps import get_current_user, require_role
 from ..security.rate_limit import limiter, user_id_or_ip
+from ..services import query_cache
 from ..services.enrichment import enrich_name
 from ..services.profile import (
     create_profile,
@@ -23,8 +24,8 @@ from ..services.profile import (
     get_all_profiles_filtered,
     get_profile_by_id,
     get_profile_by_name,
-    get_profiles,
-    get_stats,
+    get_profiles_cached,
+    get_stats_cached,
 )
 from ..services.query_parser import parse_query
 
@@ -147,7 +148,7 @@ async def search_profiles_endpoint(
             content={"status": "error", "message": "Unable to interpret query"},
         )
 
-    profiles, total = await get_profiles(
+    profiles, total = await get_profiles_cached(
         db,
         page=page,
         limit=limit,
@@ -198,6 +199,9 @@ async def create_profile_endpoint(
         logger.debug(f"Enrichment completed for {body.name}")
 
         new_profile = await create_profile(db, body.name, enriched_data)
+        # New row may match cached query results — drop everything so analysts
+        # see fresh data immediately. Cheap because cache is in-process.
+        await query_cache.invalidate_all()
         logger.info(
             f"Admin {user.username} created profile {new_profile.id} ({body.name})"
         )
@@ -232,7 +236,7 @@ async def get_stats_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Return aggregate statistics across all profiles."""
-    stats = await get_stats(db)
+    stats = await get_stats_cached(db)
     return {"status": "success", "data": stats}
 
 
@@ -341,7 +345,7 @@ async def list_profiles_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid query parameters"
         )
 
-    profiles, total = await get_profiles(
+    profiles, total = await get_profiles_cached(
         db,
         gender=gender,
         age_group=age_group,
@@ -381,4 +385,7 @@ async def delete_profile_endpoint(
             status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
         )
     await delete_profile(db, id)
+    # Cached list/search results may include this profile; flush so the
+    # next read sees the deletion immediately.
+    await query_cache.invalidate_all()
     logger.info(f"Admin {user.username} deleted profile {id}")

@@ -20,6 +20,7 @@ dependencies = [
     "pyjwt>=2.9.0",
     "slowapi>=0.1.9",
     "pycountry>=26.2.16",
+    "cachetools>=7.1.1",
 ]
 
 [project.optional-dependencies]

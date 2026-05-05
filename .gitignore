@@ -1,6 +1,24 @@
-.venv/
+# Environment
 .env
+.env.local
+.env.*.local
+
+# Python
 __pycache__/
 *.pyc
-.env
-.env
+*.pyo
+*.egg-info/
+
+# Virtualenvs
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Generated test data — the GENERATOR (scripts/generate_csv.py) is committed,
+# the OUTPUT CSVs are not. They're large, easily regenerated, and only used
+# locally for benchmarking and upload tests.
+sample_data/

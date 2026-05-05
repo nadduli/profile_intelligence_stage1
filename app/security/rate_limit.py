@@ -43,3 +43,10 @@ def user_id_or_ip(request: Request) -> str:
 
 
 limiter = Limiter(key_func=user_id_or_ip)
+
+# Mirror the custom middleware's switch so both layers turn off together.
+# Same caveat: never set RATE_LIMIT_ENABLED=false in production.
+from ..config import get_settings  # noqa: E402
+
+if not get_settings().rate_limit_enabled:
+    limiter.enabled = False

@@ -75,6 +75,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return None
 
     async def dispatch(self, request, call_next):
+        # Honour the global on/off switch — used by local dev & benchmarking.
+        # Imported inside the function to avoid a circular import at module load.
+        from ..config import get_settings
+        if not get_settings().rate_limit_enabled:
+            return await call_next(request)
+
         scope = self._scope(request)
         if scope is None:
             return await call_next(request)

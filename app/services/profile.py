@@ -5,6 +5,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Profile
+from . import query_cache
+from .normalize import cache_key
 
 
 async def get_profile_by_name(db: AsyncSession, name: str) -> Profile | None:
@@ -79,6 +81,32 @@ async def get_profiles(
 
     result = await db.execute(stmt)
     return result.scalars().all(), total
+
+
+async def get_profiles_cached(
+    db: AsyncSession,
+    **filters,
+) -> tuple[list[Profile], int]:
+    """Cache-aware wrapper around get_profiles().
+
+    Builds a deterministic cache key from the canonicalized filter dict
+    so equivalent queries (different param casing, key order, type) share
+    a single cached result. On miss, falls through to the DB and stores
+    the result. Cached payload is the *final* (rows, total) tuple — we
+    skip serialization overhead because everything stays in-process.
+
+    Routers call this in place of get_profiles(). Mutations (create /
+    delete) call query_cache.invalidate_all() to drop stale results.
+    """
+    key = cache_key(filters)
+
+    cached = await query_cache.get(key)
+    if cached is not None:
+        return cached  # (rows, total) — Profile rows held by reference
+
+    rows, total = await get_profiles(db, **filters)
+    await query_cache.set(key, (rows, total))
+    return rows, total
 
 
 async def get_all_profiles_filtered(
@@ -186,3 +214,22 @@ async def get_stats(db: AsyncSession) -> dict:
             for row in top_countries_rows
         ],
     }
+
+
+_STATS_CACHE_KEY = "profiles:stats"
+
+
+async def get_stats_cached(db: AsyncSession) -> dict:
+    """Cache-aware wrapper around get_stats().
+
+    Stats is a parameter-free aggregation, so a single global key is
+    enough — every call shares one entry. Mutations (create / delete)
+    flush the entire query_cache via invalidate_all(), which also drops
+    this entry so analysts see fresh aggregates after writes.
+    """
+    cached = await query_cache.get(_STATS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    result = await get_stats(db)
+    await query_cache.set(_STATS_CACHE_KEY, result)
+    return result
