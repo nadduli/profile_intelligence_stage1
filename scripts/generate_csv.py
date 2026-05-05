@@ -2,10 +2,8 @@
 
 import argparse
 import csv
-import os
 import random
 from pathlib import Path
-
 
 COLUMNS = [
     "name", "gender", "gender_probability", "age", "age_group",
